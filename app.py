@@ -1,11 +1,14 @@
 import json
+import os
 import random
 import sqlite3
 import uuid
+import hashlib
 from typing import Optional, Tuple
 import pandas as pd
 import streamlit as st
-from datetime import date, timedelta
+from llm import call_llm
+from datetime import date, datetime, timedelta
 
 st.set_page_config(page_title="Attribution MVP", layout="wide")
 
@@ -163,6 +166,65 @@ def init_db():
         setting_value TEXT NOT NULL
     );
     """)
+    run_sql("""
+    CREATE TABLE IF NOT EXISTS attribution_events (
+        event_id TEXT PRIMARY KEY,
+        revenue_date TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        actor_type TEXT NOT NULL,
+        actor_id TEXT NOT NULL,
+        amount REAL NOT NULL,
+        split_percent REAL NOT NULL,
+        attributed_amount REAL NOT NULL,
+        source TEXT NOT NULL,
+        rule_name TEXT,
+        rule_version TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (account_id) REFERENCES accounts(account_id),
+        FOREIGN KEY (actor_id) REFERENCES partners(partner_id)
+    );
+    """)
+    run_sql("CREATE UNIQUE INDEX IF NOT EXISTS idx_attr_events_unique ON attribution_events(revenue_date, account_id, actor_id, source);")
+
+    run_sql("""
+    CREATE TABLE IF NOT EXISTS attribution_explanations (
+        account_id TEXT NOT NULL,
+        partner_id TEXT NOT NULL,
+        as_of_date TEXT NOT NULL,
+        explanation_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (account_id, partner_id, as_of_date)
+    );
+    """)
+
+    run_sql("""
+    CREATE TABLE IF NOT EXISTS activities (
+        activity_id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL,
+        partner_id TEXT,
+        activity_type TEXT NOT NULL,
+        activity_date TEXT NOT NULL,
+        notes TEXT
+    );
+    """)
+
+    run_sql("""
+    CREATE TABLE IF NOT EXISTS ai_summaries (
+        account_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        summary_text TEXT NOT NULL,
+        PRIMARY KEY (account_id, created_at)
+    );
+    """)
+
+    run_sql("""
+    CREATE TABLE IF NOT EXISTS ai_recommendations (
+        account_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        recommendations_json TEXT NOT NULL,
+        PRIMARY KEY (account_id, created_at)
+    );
+    """)
 
     # lightweight migrations for existing DB files
     def ensure_column(table: str, column: str, definition: str):
@@ -240,6 +302,27 @@ def seed_data_if_empty():
                 "INSERT INTO revenue_events(revenue_date, account_id, amount) VALUES (?, ?, ?);",
                 (d.isoformat(), account_id, float(base))
             )
+
+    seed_activities_if_empty()
+
+
+def seed_activities_if_empty():
+    existing = read_sql("SELECT COUNT(*) as c FROM activities;")
+    if not existing.empty and int(existing.loc[0, "c"]) > 0:
+        return
+    sample_activities = [
+        ("A1", "P1", "Workshop", (date.today() - timedelta(days=20)).isoformat(), "Data platform workshop with SI."),
+        ("A1", "P2", "Referral", (date.today() - timedelta(days=10)).isoformat(), "Referral for support bot use case."),
+        ("A2", "P1", "Implementation kickoff", (date.today() - timedelta(days=5)).isoformat(), "Kickoff for claims modernization."),
+        ("A3", "P2", "QBR", (date.today() - timedelta(days=15)).isoformat(), "Quarterly review on fraud detection."),
+        ("A4", None, "Intro meeting", (date.today() - timedelta(days=7)).isoformat(), "Intro with new ISV prospect."),
+        ("A5", "P3", "Technical workshop", (date.today() - timedelta(days=3)).isoformat(), "ISV demo for manufacturing QA."),
+    ]
+    for acct, partner, atype, adate, notes in sample_activities:
+        run_sql(
+            "INSERT INTO activities(activity_id, account_id, partner_id, activity_type, activity_date, notes) VALUES (?, ?, ?, ?, ?, ?);",
+            (str(uuid.uuid4()), acct, partner, atype, adate, notes)
+        )
 
 def get_setting_bool(key: str, default: bool) -> bool:
     val = get_setting(key, str(default))
@@ -337,9 +420,9 @@ def rule_matches(rule_when: dict, ctx: dict) -> bool:
             return False
     return True
 
-def evaluate_rules(ctx: dict, key: str) -> Tuple[bool, str, bool, Optional[int]]:
+def evaluate_rules(ctx: dict, key: str) -> Tuple[bool, str, bool, Optional[int], Optional[str]]:
     """
-    Returns (allowed, message, matched_any_rule, matched_rule_index).
+    Returns (allowed, message, matched_any_rule, matched_rule_index, rule_name).
     If rules exist but none match, we block to avoid silent bypass.
     """
     rules = load_rules(key)
@@ -351,11 +434,11 @@ def evaluate_rules(ctx: dict, key: str) -> Tuple[bool, str, bool, Optional[int]]
             action = rule.get("action", "allow")
             name = rule.get("name", "Unnamed rule")
             if action == "deny":
-                return False, f"Blocked by rule: {name}", matched, idx
-            return True, f"Allowed by rule: {name}", matched, idx
+                return False, f"Blocked by rule: {name}", matched, idx, name
+            return True, f"Allowed by rule: {name}", matched, idx, name
     if rules:
-        return False, "No matching rule; blocked by default. Add an 'allow' rule for these conditions.", matched, None
-    return True, "No rules defined; allowed by default.", matched, None
+        return False, "No matching rule; blocked by default. Add an 'allow' rule for these conditions.", matched, None, None
+    return True, "No rules defined; allowed by default.", matched, None, None
 
 
 def generate_rule_suggestion() -> dict:
@@ -417,7 +500,7 @@ def apply_rules_auto_assign(model: str) -> dict:
 
     summary = {"applied": 0, "blocked_rule": 0, "blocked_cap": 0, "skipped_manual": 0, "details": []}
     for _, row in links.iterrows():
-        allowed, msg, _, _ = evaluate_rules({
+        allowed, msg, _, _, _ = evaluate_rules({
             "partner_role": row["partner_role"],
             "stage": row["stage"],
             "estimated_value": float(row["estimated_value"] or 0),
@@ -468,6 +551,358 @@ def render_apply_summary(summary: dict):
     details = summary.get("details", [])
     if details:
         st.caption("Notes: " + " | ".join(details[:5]))
+
+
+def get_rule_version(key: str) -> str:
+    raw = get_setting(key, DEFAULT_SETTINGS.get(key, "[]"))
+    digest = hashlib.md5(raw.encode()).hexdigest()[:8]
+    return f"{key}:{digest}"
+
+
+def safe_json_loads(payload: str):
+    try:
+        return json.loads(payload)
+    except Exception:
+        return None
+
+
+def recompute_attribution_ledger(days: int = 30) -> dict:
+    """
+    Rebuild attribution_events for the last `days` days of revenue.
+    """
+    start_date = (date.today() - timedelta(days=days)).isoformat()
+    # clear window first
+    run_sql("DELETE FROM attribution_events WHERE revenue_date >= ?;", (start_date,))
+    revenues = read_sql(
+        """
+        SELECT revenue_date, account_id, amount
+        FROM revenue_events
+        WHERE revenue_date >= ?
+        """,
+        (start_date,),
+    )
+    if revenues.empty:
+        return {"inserted": 0, "skipped": 0, "blocked": 0}
+
+    aps = read_sql("""
+        SELECT ap.account_id, ap.partner_id, ap.split_percent, ap.source, p.partner_name
+        FROM account_partners ap
+        JOIN partners p ON p.partner_id = ap.partner_id
+    """)
+    if aps.empty:
+        return {"inserted": 0, "skipped": len(revenues), "blocked": 0}
+
+    ucp_context = read_sql("""
+        SELECT ucp.partner_id, u.account_id, ucp.partner_role, u.stage, u.estimated_value
+        FROM use_case_partners ucp
+        JOIN use_cases u ON u.use_case_id = ucp.use_case_id;
+    """)
+    rule_ver = get_rule_version("account_rules")
+    inserted = skipped = blocked = 0
+
+    for _, rev in revenues.iterrows():
+        acct_id = rev["account_id"]
+        amount = float(rev["amount"])
+        rev_date = rev["revenue_date"]
+        acct_partners = aps[aps["account_id"] == acct_id]
+        if acct_partners.empty:
+            skipped += 1
+            continue
+        for _, ap_row in acct_partners.iterrows():
+            partner_id = ap_row["partner_id"]
+            source = ap_row["source"]
+            ctx_rows = ucp_context[
+                (ucp_context["account_id"] == acct_id) & (ucp_context["partner_id"] == partner_id)
+            ]
+            role = ctx_rows["partner_role"].iloc[0] if not ctx_rows.empty else None
+            stage_val = ctx_rows["stage"].iloc[0] if not ctx_rows.empty else None
+            est_val = float(ctx_rows["estimated_value"].iloc[0]) if (not ctx_rows.empty and pd.notnull(ctx_rows["estimated_value"].iloc[0])) else None
+
+            allowed = True
+            rule_name = "manual" if source == "manual" else None
+            if source != "manual":
+                allowed, msg, _, _, rule_name = evaluate_rules(
+                    {"partner_role": role, "stage": stage_val, "estimated_value": est_val},
+                    key="account_rules",
+                )
+                if not allowed:
+                    blocked += 1
+                    continue
+
+            split = float(ap_row["split_percent"])
+            attr_amount = amount * split
+            event_key = f"{rev_date}-{acct_id}-{partner_id}-{source}"
+            event_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, event_key))
+            run_sql(
+                """
+                INSERT INTO attribution_events(event_id, revenue_date, account_id, actor_type, actor_id, amount, split_percent, attributed_amount, source, rule_name, rule_version, created_at)
+                VALUES (?, ?, ?, 'partner', ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(event_id) DO UPDATE SET
+                    amount=excluded.amount,
+                    split_percent=excluded.split_percent,
+                    attributed_amount=excluded.attributed_amount,
+                    rule_name=excluded.rule_name,
+                    rule_version=excluded.rule_version,
+                    created_at=excluded.created_at;
+                """,
+                (
+                    event_id,
+                    rev_date,
+                    acct_id,
+                    partner_id,
+                    amount,
+                    split,
+                    attr_amount,
+                    source,
+                    rule_name,
+                    rule_ver,
+                    date.today().isoformat(),
+                ),
+            )
+            inserted += 1
+    return {"inserted": inserted, "skipped": skipped, "blocked": blocked}
+
+
+def recompute_explanations(account_id: str):
+    today_str = date.today().isoformat()
+    aps = read_sql("""
+      SELECT ap.partner_id, ap.split_percent, ap.source
+      FROM account_partners ap
+      WHERE ap.account_id = ?;
+    """, (account_id,))
+    if aps.empty:
+        return {"written": 0}
+
+    ucp = read_sql("""
+      SELECT ucp.partner_id, ucp.partner_role, u.use_case_name, u.stage, u.estimated_value
+      FROM use_case_partners ucp
+      JOIN use_cases u ON u.use_case_id = ucp.use_case_id
+      WHERE u.account_id = ?;
+    """, (account_id,))
+    rule_ver_use = get_rule_version("use_case_rules")
+    rule_ver_account = get_rule_version("account_rules")
+    written = 0
+    for _, ap_row in aps.iterrows():
+        pid = ap_row["partner_id"]
+        uc_links = ucp[ucp["partner_id"] == pid]
+        uc_items = []
+        use_case_decisions = []
+        for _, r in uc_links.iterrows():
+            allowed, msg, _, _, rname = evaluate_rules(
+                {
+                    "partner_role": r["partner_role"],
+                    "stage": r["stage"],
+                    "estimated_value": float(r["estimated_value"] or 0),
+                },
+                key="use_case_rules",
+            )
+            uc_items.append(
+                {
+                    "use_case_name": r["use_case_name"],
+                    "role": r["partner_role"],
+                    "stage": r["stage"],
+                    "estimated_value": r["estimated_value"],
+                    "allowed": allowed,
+                    "rule_name": rname,
+                    "rule_version": rule_ver_use,
+                    "detail": msg,
+                }
+            )
+            use_case_decisions.append({"use_case": r["use_case_name"], "allowed": allowed, "rule_name": rname})
+
+        # account rule decision
+        sample_ctx = uc_links.iloc[0] if not uc_links.empty else None
+        role = sample_ctx["partner_role"] if sample_ctx is not None else None
+        stage_val = sample_ctx["stage"] if sample_ctx is not None else None
+        est_val = float(sample_ctx["estimated_value"] or 0) if sample_ctx is not None else None
+        acct_allowed, acct_msg, _, _, acct_rule = evaluate_rules(
+            {"partner_role": role, "stage": stage_val, "estimated_value": est_val},
+            key="account_rules",
+        )
+
+        source = ap_row["source"]
+        split_percent = float(ap_row["split_percent"])
+        split_reason = "Manual split" if source == "manual" else "AI suggested" if source == "ai" else "Auto rollup"
+
+        explanation = {
+            "account_id": account_id,
+            "partner_id": pid,
+            "as_of": today_str,
+            "source": source,
+            "split_percent": split_percent,
+            "split_reason": split_reason,
+            "use_case_links": uc_items,
+            "rule_decisions": {
+                "account": {"allowed": acct_allowed, "rule_name": acct_rule, "rule_version": rule_ver_account, "detail": acct_msg},
+                "use_cases": use_case_decisions,
+            },
+        }
+        run_sql(
+            """
+            INSERT INTO attribution_explanations(account_id, partner_id, as_of_date, explanation_json, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(account_id, partner_id, as_of_date)
+            DO UPDATE SET explanation_json=excluded.explanation_json, created_at=excluded.created_at;
+            """,
+            (account_id, pid, today_str, json.dumps(explanation, indent=2), datetime.utcnow().isoformat()),
+        )
+        written += 1
+    return {"written": written}
+
+
+def _heuristic_rule_from_text(text: str) -> dict:
+    lower = text.lower()
+    name = text.strip()[:60] or "Custom rule"
+    action = "allow"
+    if "only" in lower and "not" in lower or "block" in lower or "deny" in lower:
+        action = "deny"
+    when = {}
+    stages = ["discovery", "evaluation", "commit", "live"]
+    for s in stages:
+        if s in lower:
+            when["stage"] = s.capitalize()
+            break
+    numbers = [int(tok) for tok in lower.replace(">", " ").replace("$", " ").split() if tok.isdigit()]
+    if numbers:
+        val = numbers[0]
+        if ">" in lower or "over" in lower or "above" in lower:
+            when["min_estimated_value"] = val
+        elif "<" in lower or "under" in lower or "below" in lower:
+            when["max_estimated_value"] = val
+    if "si" in lower or "implementation" in lower:
+        when["partner_role"] = "Implementation (SI)"
+    return {"name": name, "action": action, "when": when}
+
+
+def convert_nl_to_rule(text: str) -> Tuple[dict, Optional[str]]:
+    prompt = (
+        "Convert this rule description into JSON with keys name, action (allow/deny), when (partner_role?, stage?, "
+        "min_estimated_value?, max_estimated_value?). Only return JSON. Description:\n"
+        f"{text}"
+    )
+    ok, content, err = call_llm(prompt, system="Return JSON only.")
+    rule = None
+    if ok and content:
+        try:
+            rule = json.loads(content)
+        except Exception:
+            rule = None
+    if rule is None:
+        rule = _heuristic_rule_from_text(text)
+    return rule, err
+
+
+def validate_rule_obj(rule: dict) -> bool:
+    if not isinstance(rule, dict):
+        return False
+    if "name" not in rule or "action" not in rule or "when" not in rule:
+        return False
+    if rule["action"] not in ["allow", "deny"]:
+        return False
+    if not isinstance(rule["when"], dict):
+        return False
+    return True
+
+
+def generate_relationship_summary(account_id: str) -> Tuple[str, Optional[str]]:
+    acct = read_sql("SELECT account_name FROM accounts WHERE account_id = ?;", (account_id,))
+    acct_name = acct.loc[0, "account_name"] if not acct.empty else account_id
+    use_cases = read_sql("SELECT use_case_name, stage FROM use_cases WHERE account_id = ?;", (account_id,))
+    activities = read_sql("SELECT activity_type, activity_date, notes FROM activities WHERE account_id = ? ORDER BY activity_date DESC LIMIT 5;", (account_id,))
+    rev = read_sql("SELECT SUM(attributed_amount) AS total_attr FROM attribution_events WHERE account_id = ? AND revenue_date >= date('now','-30 day');", (account_id,))
+    base_summary = f"{acct_name}: {len(use_cases)} use cases, recent attributed revenue {float(rev['total_attr'].iloc[0] or 0):,.0f} in last 30d."
+    if activities.empty:
+        activity_txt = "No recent activities."
+    else:
+        rows = [f"{row['activity_date']}: {row['activity_type']} ({row['notes']})" for _, row in activities.iterrows()]
+        activity_txt = "; ".join(rows)
+    prompt = f"Summarize account relationships: {base_summary} Activities: {activity_txt}. Provide 3 bullets on health, risks, next steps."
+    ok, content, err = call_llm(prompt, system="Concise summary.")
+    if ok and content:
+        return content, None
+    # fallback deterministic
+    fallback = f"{base_summary} Activities: {activity_txt}"
+    return fallback, err or "LLM not available"
+
+
+def generate_ai_recommendations(account_id: str) -> Tuple[list, Optional[str]]:
+    acct_name = read_sql("SELECT account_name FROM accounts WHERE account_id = ?;", (account_id,))
+    acct_name = acct_name.loc[0, "account_name"] if not acct_name.empty else account_id
+    prompt = (
+        f"Recommend partner attributions for account {acct_name} ({account_id}). "
+        "Return JSON list of objects with partner_id, recommended_role, recommended_split_percent, confidence (0-1), reasons."
+    )
+    ok, content, err = call_llm(prompt, system="Return JSON only.")
+    recs = None
+    if ok and content:
+        try:
+            recs = json.loads(content)
+        except Exception:
+            recs = None
+    if recs is None or not isinstance(recs, list):
+        # fallback: pick top existing partner or first partner
+        ledger = read_sql("""
+          SELECT actor_id, SUM(attributed_amount) AS amt
+          FROM attribution_events
+          WHERE account_id = ?
+          GROUP BY actor_id
+          ORDER BY amt DESC
+          LIMIT 1;
+        """, (account_id,))
+        partners = read_sql("SELECT partner_id FROM partners ORDER BY partner_name;")
+        target_partner = ledger["actor_id"].iloc[0] if not ledger.empty else (partners["partner_id"].iloc[0] if not partners.empty else None)
+        if target_partner:
+            recs = [{
+                "partner_id": target_partner,
+                "recommended_role": "Influence",
+                "recommended_split_percent": 20,
+                "confidence": 0.5,
+                "reasons": "Heuristic fallback without LLM."
+            }]
+        else:
+            recs = []
+    return recs, err
+
+
+def apply_recommendations(account_id: str, recs: list) -> dict:
+    today_str = date.today().isoformat()
+    stats = {"applied": 0, "blocked_cap": 0, "skipped_manual": 0, "invalid": 0, "missing_use_case": 0}
+    use_cases = read_sql("SELECT use_case_id FROM use_cases WHERE account_id = ?;", (account_id,))
+    uc_for_links = use_cases["use_case_id"].iloc[0] if not use_cases.empty else None
+    for rec in recs:
+        pid = rec.get("partner_id")
+        role = rec.get("recommended_role", "Influence")
+        split_pct = rec.get("recommended_split_percent", 0)
+        if not pid or split_pct is None:
+            stats["invalid"] += 1
+            continue
+        split = float(split_pct) / 100.0
+        existing = read_sql("SELECT source, first_seen FROM account_partners WHERE account_id = ? AND partner_id = ?;", (account_id, pid))
+        if not existing.empty and existing.loc[0, "source"] == "manual":
+            stats["skipped_manual"] += 1
+            continue
+        if should_enforce_split_cap():
+            exceeds, _ = will_exceed_split_cap(account_id, pid, split)
+            if exceeds:
+                stats["blocked_cap"] += 1
+                continue
+        first_seen = existing.loc[0, "first_seen"] if not existing.empty else today_str
+        run_sql("""
+            INSERT INTO account_partners(account_id, partner_id, split_percent, first_seen, last_seen, source)
+            VALUES (?, ?, ?, ?, ?, 'ai')
+            ON CONFLICT(account_id, partner_id)
+            DO UPDATE SET split_percent=excluded.split_percent, last_seen=excluded.last_seen, source=excluded.source;
+        """, (account_id, pid, split, first_seen, today_str))
+        if uc_for_links:
+            run_sql("""
+            INSERT INTO use_case_partners(use_case_id, partner_id, partner_role, created_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(use_case_id, partner_id) DO UPDATE SET partner_role=excluded.partner_role;
+            """, (uc_for_links, pid, role, today_str))
+        else:
+            stats["missing_use_case"] += 1
+        stats["applied"] += 1
+    return stats
 
 def upsert_account_partner_from_use_case_partner(use_case_id: str, partner_id: str, partner_role: str, split_percent: float):
     # find account_id from use case
@@ -561,6 +996,7 @@ def reset_demo():
 # ----------------------------
 init_db()
 seed_data_if_empty()
+seed_activities_if_empty()
 
 st.title("Attribution MVP (Streamlit)")
 
@@ -588,6 +1024,9 @@ if schema_stored != SCHEMA_VERSION:
         f"Database schema version mismatch (found {schema_stored}, expected {SCHEMA_VERSION}). "
         "Use Admin → Reset demo data to refresh tables."
     )
+if "ledger_bootstrap" not in st.session_state:
+    recompute_attribution_ledger(30)
+    st.session_state["ledger_bootstrap"] = True
 
 # Tabs for clearer navigation
 accounts = read_sql("SELECT account_id, account_name FROM accounts ORDER BY account_name;")
@@ -596,6 +1035,7 @@ tabs = st.tabs([
     "Admin",
     "Account Partner 360",
     "Account Drilldown",
+    "Relationship Summary (AI)",
 ])
 
 # --- Tab 1: Admin ---
@@ -651,6 +1091,9 @@ with tabs[0]:
         if st.button("Reset demo data (start fresh)"):
             reset_demo()
             st.success("Reset complete. Refresh the page.")
+        if st.button("Recompute ledger (last 30 days)"):
+            res = recompute_attribution_ledger(30)
+            st.success(f"Ledger recomputed: {res['inserted']} rows, {res['blocked']} blocked, {res['skipped']} skipped.")
 
     st.markdown("---")
     st.markdown('<a id="rule-builder"></a>', unsafe_allow_html=True)
@@ -827,6 +1270,73 @@ with tabs[0]:
     render_rule_section("Use Case Rules (per-link gating)", key="use_case_rules", enabled=model in ["use_case_only", "hybrid"], applies_to_account=False)
     render_rule_section("Account Rules (roll up to account splits)", key="account_rules", enabled=model in ["account_only", "hybrid"], applies_to_account=True)
 
+    st.markdown("---")
+    st.subheader("Natural-language rules → structured")
+    nl_text = st.text_area("Describe a rule in plain English", height=100)
+    target_rule_set = st.selectbox("Save to", ["use_case_rules", "account_rules"], format_func=lambda k: "Use case rules" if k == "use_case_rules" else "Account rules")
+    if st.button("Convert to rule JSON"):
+        rule, err = convert_nl_to_rule(nl_text)
+        if not validate_rule_obj(rule):
+            st.error("Could not parse into a valid rule. Please refine the text.")
+        else:
+            st.code(json.dumps(rule, indent=2), language="json")
+            preview_links = read_sql("""
+                SELECT ucp.partner_role, u.stage, u.estimated_value
+                FROM use_case_partners ucp
+                JOIN use_cases u ON u.use_case_id = ucp.use_case_id;
+            """)
+            matches = 0
+            if not preview_links.empty:
+                for _, r in preview_links.iterrows():
+                    if evaluate_rules(
+                        {"partner_role": r["partner_role"], "stage": r["stage"], "estimated_value": r["estimated_value"]},
+                        key=target_rule_set
+                    )[0]:
+                        matches += 1
+                st.info(f"Would match {matches}/{len(preview_links)} existing links.")
+            if st.button("Add converted rule"):
+                rules = load_rules(target_rule_set)
+                rules.append(rule)
+                set_setting(target_rule_set, json.dumps(rules, indent=2))
+                st.success("Rule added.")
+                if target_rule_set == "account_rules":
+                    render_apply_summary(apply_rules_auto_assign(model))
+        if err:
+            st.caption(f"LLM note: {err}")
+
+    st.markdown("---")
+    st.subheader("AI recommendations (account-level)")
+    acct_map_ai = {f"{row['account_name']} ({row['account_id']})": row["account_id"] for _, row in accounts.iterrows()}
+    if acct_map_ai:
+        acct_choice_ai = st.selectbox("Account for recommendations", list(acct_map_ai.keys()), key="ai_recs_account")
+        acct_id_ai = acct_map_ai[acct_choice_ai]
+        if st.button("AI recommend attributions for this account"):
+            recs, err = generate_ai_recommendations(acct_id_ai)
+            run_sql("""
+            INSERT INTO ai_recommendations(account_id, created_at, recommendations_json)
+            VALUES (?, ?, ?);
+            """, (acct_id_ai, datetime.utcnow().isoformat(), json.dumps(recs, indent=2)))
+            st.code(json.dumps(recs, indent=2), language="json")
+            if err:
+                st.caption(f"LLM note: {err}")
+        latest_recs = read_sql("""
+          SELECT recommendations_json, created_at
+          FROM ai_recommendations
+          WHERE account_id = ?
+          ORDER BY created_at DESC
+          LIMIT 1;
+        """, (acct_id_ai,))
+        if not latest_recs.empty:
+            recs = safe_json_loads(latest_recs.loc[0, "recommendations_json"]) or []
+            st.caption(f"Latest recommendations at {latest_recs.loc[0, 'created_at']}")
+            st.code(json.dumps(recs, indent=2), language="json")
+            if st.button("Apply recommendations"):
+                stats = apply_recommendations(acct_id_ai, recs)
+                st.success(f"Applied: {stats['applied']}, blocked cap: {stats['blocked_cap']}, skipped manual: {stats['skipped_manual']}, invalid: {stats['invalid']}")
+                recompute_attribution_ledger(30)
+    else:
+        st.info("No accounts found.")
+
 # --- Tab 2: Relationships ---
 with tabs[1]:
     st.subheader("Catalog & links")
@@ -975,7 +1485,7 @@ with tabs[1]:
                 st.info(f"Auto-assigned {default_val}% based on defaults. Enable manual override in Admin to customize.")
 
         if st.button("Save use case ↔ partner (auto rollup)"):
-            uc_allowed, uc_msg, _, uc_rule_idx = evaluate_rules({
+            uc_allowed, uc_msg, _, uc_rule_idx, uc_rule_name = evaluate_rules({
                 "partner_role": role_choice,
                 "stage": str(uc_row["stage"]) if pd.notnull(uc_row["stage"]) else None,
                 "estimated_value": uc_value,
@@ -994,7 +1504,7 @@ with tabs[1]:
                 DO UPDATE SET partner_role = excluded.partner_role;
                 """, (uc_label_map[uc_choice], p_label_map[p_choice], role_choice, today))
                 if model in ["account_only", "hybrid"]:
-                    acct_allowed, acct_msg, _, acct_rule_idx = evaluate_rules({
+                    acct_allowed, acct_msg, _, acct_rule_idx, acct_rule_name = evaluate_rules({
                         "partner_role": role_choice,
                         "stage": str(uc_row["stage"]) if pd.notnull(uc_row["stage"]) else None,
                         "estimated_value": uc_value,
@@ -1101,12 +1611,11 @@ with tabs[1]:
     partner_impact = read_sql("""
       SELECT
         p.partner_name,
-        COUNT(DISTINCT ap.account_id) AS accounts_influenced,
-        ROUND(SUM(r.amount * ap.split_percent), 2) AS total_attributed_revenue_60d
-      FROM account_partners ap
-      JOIN partners p ON p.partner_id = ap.partner_id
-      JOIN revenue_events r ON r.account_id = ap.account_id
-      WHERE r.revenue_date >= date('now', '-60 day')
+        COUNT(DISTINCT ae.account_id) AS accounts_influenced,
+        ROUND(SUM(ae.attributed_amount), 2) AS total_attributed_revenue_60d
+      FROM attribution_events ae
+      JOIN partners p ON p.partner_id = ae.actor_id
+      WHERE ae.revenue_date >= date('now', '-60 day')
       GROUP BY p.partner_name
       ORDER BY total_attributed_revenue_60d DESC;
     """)
@@ -1124,7 +1633,7 @@ with tabs[2]:
         st.info("No accounts available.")
     else:
         acct_map = {f"{row['account_name']} ({row['account_id']})": row["account_id"] for _, row in accounts.iterrows()}
-        acct_choice = st.selectbox("Account", list(acct_map.keys()))
+        acct_choice = st.selectbox("Account", list(acct_map.keys()), key="drilldown_account")
         selected_account_id = acct_map[acct_choice]
 
         st.caption("Review use cases, linked partners, and revenue for this account.")
@@ -1166,14 +1675,13 @@ with tabs[2]:
         attr_by_partner = read_sql("""
           SELECT
             p.partner_name,
-            ap.split_percent,
-            ROUND(SUM(r.amount * ap.split_percent), 2) AS attributed_amount
-          FROM account_partners ap
-          JOIN partners p ON p.partner_id = ap.partner_id
-          JOIN revenue_events r ON r.account_id = ap.account_id
-          WHERE ap.account_id = ?
-            AND r.revenue_date >= date('now', '-30 day')
-          GROUP BY p.partner_name, ap.split_percent
+            ROUND(SUM(ae.attributed_amount), 2) AS attributed_amount,
+            MAX(ae.split_percent) AS split_percent
+          FROM attribution_events ae
+          JOIN partners p ON p.partner_id = ae.actor_id
+          WHERE ae.account_id = ?
+            AND ae.revenue_date >= date('now', '-30 day')
+          GROUP BY p.partner_name
           ORDER BY attributed_amount DESC;
         """, (selected_account_id,))
         total_attr = float(attr_by_partner["attributed_amount"].sum()) if not attr_by_partner.empty else 0.0
@@ -1188,8 +1696,77 @@ with tabs[2]:
         else:
             st.dataframe(attr_by_partner, use_container_width=True)
 
+        st.markdown("**Why this credit?**")
+        if st.button("Recompute explanations", key=f"recompute_exp_{selected_account_id}"):
+            res = recompute_explanations(selected_account_id)
+            st.success(f"Wrote {res['written']} explanations for {acct_choice}.")
+        exps = read_sql("""
+          SELECT partner_id, as_of_date, explanation_json
+          FROM attribution_explanations
+          WHERE account_id = ?
+          ORDER BY created_at DESC;
+        """, (selected_account_id,))
+        if exps.empty:
+            st.caption("No explanations yet. Click recompute to generate.")
+        else:
+            for _, row in exps.iterrows():
+                data = safe_json_loads(row["explanation_json"]) or {}
+                partner_name = read_sql("SELECT partner_name FROM partners WHERE partner_id = ?;", (row["partner_id"],))
+                partner_label = partner_name.loc[0, "partner_name"] if not partner_name.empty else row["partner_id"]
+                with st.expander(f"{partner_label} — as of {row['as_of_date']}"):
+                    st.write(f"Source: {data.get('source', 'n/a')} | Split: {data.get('split_percent', 0)*100:.0f}% | Reason: {data.get('split_reason')}")
+                    uc_links = data.get("use_case_links", [])
+                    if uc_links:
+                        st.caption("Use case links")
+                        st.table(pd.DataFrame(uc_links))
+                    rules = data.get("rule_decisions", {})
+                    st.caption(f"Account rules: {rules.get('account', {})}")
+                    st.caption(f"Use case rules: {rules.get('use_cases', [])}")
+
         st.markdown("**Revenue events (30d)**")
         if rev.empty:
             st.info("No revenue events in the last 30 days.")
         else:
             st.dataframe(rev, use_container_width=True)
+
+# --- Tab 4: Relationship Summary (AI) ---
+with tabs[3]:
+    st.subheader("Relationship Summary (AI)")
+    st.caption("Blend accounts, use cases, partners, activities, and recent attribution into a single summary. Works without an API key using a deterministic fallback.")
+    acct_map_rel = {f"{row['account_name']} ({row['account_id']})": row["account_id"] for _, row in accounts.iterrows()}
+    if not acct_map_rel:
+        st.info("No accounts available.")
+    else:
+        acct_choice_rel = st.selectbox("Account", list(acct_map_rel.keys()), key="rel_summary_account")
+        acct_id_rel = acct_map_rel[acct_choice_rel]
+        if st.button("Generate summary"):
+            summary_text, err = generate_relationship_summary(acct_id_rel)
+            run_sql("""
+              INSERT INTO ai_summaries(account_id, created_at, summary_text)
+              VALUES (?, ?, ?);
+            """, (acct_id_rel, datetime.utcnow().isoformat(), summary_text))
+            st.success("Summary generated.")
+            st.write(summary_text)
+            if err:
+                st.caption(f"LLM note: {err}")
+        latest = read_sql("""
+          SELECT summary_text, created_at
+          FROM ai_summaries
+          WHERE account_id = ?
+          ORDER BY created_at DESC
+          LIMIT 1;
+        """, (acct_id_rel,))
+        if not latest.empty:
+            st.caption(f"Latest summary ({latest.loc[0, 'created_at']}):")
+            st.write(latest.loc[0, "summary_text"])
+        st.markdown("**Recent activities**")
+        rel_acts = read_sql("""
+          SELECT activity_date, activity_type, notes, partner_id
+          FROM activities
+          WHERE account_id = ?
+          ORDER BY activity_date DESC;
+        """, (acct_id_rel,))
+        if rel_acts.empty:
+            st.info("No activities logged.")
+        else:
+            st.dataframe(rel_acts, use_container_width=True)
