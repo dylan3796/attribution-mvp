@@ -9,6 +9,46 @@ from datetime import date, timedelta
 
 st.set_page_config(page_title="Attribution MVP", layout="wide")
 
+# Light theming to avoid plain white background
+st.markdown(
+    """
+    <style>
+    body {
+        background: linear-gradient(135deg, #f5f7fa 0%, #e8f0ff 50%, #fdfbfb 100%);
+    }
+    section.main > div {
+        padding: 1.5rem 1.5rem 3rem 1.5rem;
+    }
+    .block-container {
+        padding-top: 1.5rem;
+    }
+    .stTabs [role="tablist"] {
+        gap: 0.25rem;
+    }
+    .stTabs [role="tab"] {
+        border-radius: 12px;
+        background: #f2f4f8;
+        padding: 0.35rem 0.75rem;
+        border: 1px solid #e0e6ef;
+    }
+    .stTabs [aria-selected="true"] {
+        background: #d7e3ff;
+        border-color: #b6ccff;
+        color: #0b3ba7 !important;
+        font-weight: 600;
+    }
+    .metric-card {
+        background: rgba(255,255,255,0.75);
+        border: 1px solid #e2e8f0;
+        border-radius: 14px;
+        padding: 1rem 1.25rem;
+        box-shadow: 0 10px 30px rgba(12,33,80,0.07);
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 DB_PATH = "attribution.db"
 SCHEMA_VERSION = "1.0"
 DEFAULT_SETTINGS = {
