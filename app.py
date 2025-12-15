@@ -62,7 +62,8 @@ DEFAULT_SETTINGS = {
     "default_split_referral": "15",
     "default_split_isv": "10",
     "allow_manual_split_override": "false",
-    "attribution_model": "hybrid",  # use_case_only | account_only | hybrid
+    "enable_use_case_rules": "true",
+    "enable_account_rollup": "true",
     "schema_version": SCHEMA_VERSION,
     "account_rules": json.dumps([
         {
@@ -470,11 +471,11 @@ def generate_rule_suggestion() -> dict:
     }
 
 
-def apply_rules_auto_assign(model: str) -> dict:
+def apply_rules_auto_assign(account_rollup_enabled: bool) -> dict:
     """
     Apply current rules to existing use_case_partner links and auto-upsert account_partner splits.
     """
-    if model == "use_case_only":
+    if not account_rollup_enabled:
         return {"applied": 0, "blocked_rule": 0, "blocked_cap": 0, "skipped_manual": 0, "details": ["Account rollup disabled for current model."]}
 
     links = read_sql("""
@@ -1097,16 +1098,12 @@ with tabs[0]:
 
     st.markdown("---")
     st.markdown('<a id="rule-builder"></a>', unsafe_allow_html=True)
-    st.subheader("Attribution model")
-    st.caption("Pick the simplest path: use-case-only (no account splits), account-only, or hybrid.")
-    model_labels = {
-        "use_case_only": "Use-Case Only (no account splits)",
-        "account_only": "Account Consumption Only (account splits from links)",
-        "hybrid": "Hybrid (use-case links + account splits)"
-    }
-    model = st.radio("Model", list(model_labels.keys()), format_func=lambda k: model_labels[k], index=["use_case_only", "account_only", "hybrid"].index(get_setting("attribution_model", "hybrid")))
-    set_setting("attribution_model", model)
-    st.info(f"Model: {model_labels[model]}")
+    st.subheader("Attribution configuration")
+    st.caption("Turn on exactly what you need. No presets—use your own data and rules.")
+    use_case_rules_enabled = st.checkbox("Gate use-case links with rules", value=get_setting_bool("enable_use_case_rules", True))
+    account_rollup_enabled = st.checkbox("Enable account-level rollup/splits", value=get_setting_bool("enable_account_rollup", True))
+    set_setting_bool("enable_use_case_rules", use_case_rules_enabled)
+    set_setting_bool("enable_account_rollup", account_rollup_enabled)
 
     def render_rule_section(title: str, key: str, enabled: bool, applies_to_account: bool):
         st.markdown(f"### {title}")
@@ -1174,7 +1171,7 @@ with tabs[0]:
                             match_count = sum(rule_matches(new_rule.get("when", {}), row) for _, row in preview_data.iterrows())
                             st.info(f"Would match {match_count}/{len(preview_data)} existing links.")
                         if applies_to_account:
-                            render_apply_summary(apply_rules_auto_assign(model))
+                            render_apply_summary(apply_rules_auto_assign(account_rollup_enabled))
                 if rules:
                     edit_idx = st.selectbox("Select rule to edit", list(range(len(rules))), format_func=lambda i: rules[i].get("name", f"Rule {i+1}"), key=f"edit_idx_{key}")
                     to_edit = rules[edit_idx]
@@ -1212,7 +1209,7 @@ with tabs[0]:
                         set_setting(key, json.dumps(updated, indent=2))
                         st.success("Rule updated.")
                         if applies_to_account:
-                            render_apply_summary(apply_rules_auto_assign(model))
+                            render_apply_summary(apply_rules_auto_assign(account_rollup_enabled))
         with add_col2:
             with st.expander("Quick actions", expanded=False):
                 if rules:
@@ -1226,7 +1223,7 @@ with tabs[0]:
                     set_setting(key, json.dumps(updated, indent=2))
                     st.success("Allow-all rule added.")
                     if applies_to_account:
-                        render_apply_summary(apply_rules_auto_assign(model))
+                        render_apply_summary(apply_rules_auto_assign(account_rollup_enabled))
                 if st.button("Add block SI in Commit", key=f"block_template_{key}"):
                     updated = rules + [{
                         "name": "Block SI in Commit",
@@ -1236,7 +1233,7 @@ with tabs[0]:
                     set_setting(key, json.dumps(updated, indent=2))
                     st.success("Template rule added.")
                     if applies_to_account:
-                        render_apply_summary(apply_rules_auto_assign(model))
+                        render_apply_summary(apply_rules_auto_assign(account_rollup_enabled))
                 suggestion = st.session_state.get(f"ai_rule_suggestion_{key}")
                 if st.button("Generate suggestion", key=f"gen_suggest_{key}"):
                     st.session_state[f"ai_rule_suggestion_{key}"] = generate_rule_suggestion()
@@ -1263,12 +1260,12 @@ with tabs[0]:
                             matches += 1
                     st.info(f"Would affect {matches} of {len(preview_data)} existing links.")
             if applies_to_account and st.button("Apply to account splits now", key=f"apply_{key}"):
-                render_apply_summary(apply_rules_auto_assign(model))
+                render_apply_summary(apply_rules_auto_assign(account_rollup_enabled))
             elif not applies_to_account:
                 st.caption("Use-case rules gate link creation. Account splits are unaffected.")
 
-    render_rule_section("Use Case Rules (per-link gating)", key="use_case_rules", enabled=model in ["use_case_only", "hybrid"], applies_to_account=False)
-    render_rule_section("Account Rules (roll up to account splits)", key="account_rules", enabled=model in ["account_only", "hybrid"], applies_to_account=True)
+    render_rule_section("Use Case Rules (per-link gating)", key="use_case_rules", enabled=use_case_rules_enabled, applies_to_account=False)
+    render_rule_section("Account Rules (roll up to account splits)", key="account_rules", enabled=account_rollup_enabled, applies_to_account=True)
 
     st.markdown("---")
     st.subheader("Natural-language rules → structured")
@@ -1300,7 +1297,7 @@ with tabs[0]:
                 set_setting(target_rule_set, json.dumps(rules, indent=2))
                 st.success("Rule added.")
                 if target_rule_set == "account_rules":
-                    render_apply_summary(apply_rules_auto_assign(model))
+                    render_apply_summary(apply_rules_auto_assign(account_rollup_enabled))
         if err:
             st.caption(f"LLM note: {err}")
 
@@ -1340,14 +1337,7 @@ with tabs[0]:
 # --- Tab 2: Relationships ---
 with tabs[1]:
     st.subheader("Catalog & links")
-    model = get_setting("attribution_model", "hybrid")
-    model_labels_local = {
-        "use_case_only": "Use-Case Only (no account splits)",
-        "account_only": "Account Consumption Only (account splits from links)",
-        "hybrid": "Hybrid (use-case links + account splits)"
-    }
     st.caption("Accounts, use cases, and partner links in one place. Imported CRM links will appear here.")
-    st.info(f"Attribution model: {model_labels_local.get(model, model)}")
     filter_cols = st.columns(3)
     with filter_cols[0]:
         account_filter = st.selectbox("Filter by account", ["All"] + [f"{row['account_name']} ({row['account_id']})" for _, row in accounts.iterrows()])
@@ -1485,11 +1475,14 @@ with tabs[1]:
                 st.info(f"Auto-assigned {default_val}% based on defaults. Enable manual override in Admin to customize.")
 
         if st.button("Save use case ↔ partner (auto rollup)"):
-            uc_allowed, uc_msg, _, uc_rule_idx, uc_rule_name = evaluate_rules({
-                "partner_role": role_choice,
-                "stage": str(uc_row["stage"]) if pd.notnull(uc_row["stage"]) else None,
-                "estimated_value": uc_value,
-            }, key="use_case_rules")
+            if get_setting_bool("enable_use_case_rules", True):
+                uc_allowed, uc_msg, _, uc_rule_idx, uc_rule_name = evaluate_rules({
+                    "partner_role": role_choice,
+                    "stage": str(uc_row["stage"]) if pd.notnull(uc_row["stage"]) else None,
+                    "estimated_value": uc_value,
+                }, key="use_case_rules")
+            else:
+                uc_allowed, uc_msg, uc_rule_idx, uc_rule_name = True, "Use-case rules disabled", None, None
             if not uc_allowed:
                 st.error(f"Use case rule blocked: {uc_msg}")
             else:
@@ -1503,7 +1496,7 @@ with tabs[1]:
                 ON CONFLICT(use_case_id, partner_id)
                 DO UPDATE SET partner_role = excluded.partner_role;
                 """, (uc_label_map[uc_choice], p_label_map[p_choice], role_choice, today))
-                if model in ["account_only", "hybrid"]:
+                if get_setting_bool("enable_account_rollup", True):
                     acct_allowed, acct_msg, _, acct_rule_idx, acct_rule_name = evaluate_rules({
                         "partner_role": role_choice,
                         "stage": str(uc_row["stage"]) if pd.notnull(uc_row["stage"]) else None,
@@ -1527,7 +1520,7 @@ with tabs[1]:
                         else:
                             st.success(f"Saved. UseCasePartner created/updated AND AccountPartner auto-upserted at {split*100:.0f}% split.")
                 else:
-                    st.success("UseCasePartner saved. Account rollup skipped (use-case-only model).")
+                    st.success("UseCasePartner saved. Account rollup skipped (rollup disabled).")
 
     links = read_sql("""
         SELECT
