@@ -1137,8 +1137,8 @@ with tabs[0]:
         if not enabled:
             st.warning("Disabled for current model.")
             return
+        st.caption("Rules are partner-role based. Field-level conditions (stage, amount) are hidden to keep things simple.")
         rules = load_rules(key)
-        mode = st.radio("Mode", ["Preset (out-of-the-box)", "Custom"], horizontal=True, key=f"mode_{key}")
         if f"ai_rule_suggestion_{key}" not in st.session_state:
             st.session_state[f"ai_rule_suggestion_{key}"] = None
         preview_data = read_sql("""
@@ -1146,42 +1146,6 @@ with tabs[0]:
             FROM use_case_partners ucp
             JOIN use_cases u ON u.use_case_id = ucp.use_case_id;
         """)
-        if mode.startswith("Preset"):
-            st.info("Use presets as a starting point; you can switch to Custom to edit further.")
-            col_p1, col_p2 = st.columns(2)
-            with col_p1:
-                if st.button("Add preset: only Live rollups", key=f"preset_live_{key}"):
-                    preset = {"name": "Only Live use cases roll up", "action": "allow", "when": {"stage": "Live"}}
-                    updated = rules + [preset]
-                    set_setting(key, json.dumps(updated, indent=2))
-                    st.success("Preset added.")
-                    rules = updated
-                    if applies_to_account:
-                        render_apply_summary(apply_rules_auto_assign(account_rollup_enabled))
-                if st.button("Add preset: block SI < $50k", key=f"preset_si_{key}"):
-                    preset = {"name": "Block SI below 50k", "action": "deny", "when": {"partner_role": "Implementation (SI)", "max_estimated_value": 50000}}
-                    updated = rules + [preset]
-                    set_setting(key, json.dumps(updated, indent=2))
-                    st.success("Preset added.")
-                    rules = updated
-                    if applies_to_account:
-                        render_apply_summary(apply_rules_auto_assign(account_rollup_enabled))
-            with col_p2:
-                if st.button("Add preset: allow all fallback", key=f"preset_allow_{key}"):
-                    preset = {"name": "Allow all", "action": "allow", "when": {}}
-                    updated = rules + [preset]
-                    set_setting(key, json.dumps(updated, indent=2))
-                    st.success("Preset added.")
-                    rules = updated
-                    if applies_to_account:
-                        render_apply_summary(apply_rules_auto_assign(account_rollup_enabled))
-                if st.button("Clear all rules", key=f"clear_{key}"):
-                    set_setting(key, "[]")
-                    rules = []
-                    st.success("All rules cleared.")
-                    if applies_to_account:
-                        render_apply_summary(apply_rules_auto_assign(account_rollup_enabled))
-            st.markdown("---")
         with st.expander("Current rules", expanded=False):
             if rules:
                 rule_rows = []
@@ -1191,9 +1155,6 @@ with tabs[0]:
                         "Name": r.get("name", ""),
                         "Action": r.get("action", "allow"),
                         "Partner role": when.get("partner_role", "Any"),
-                        "Stage": when.get("stage", "Any"),
-                        "Min est. value": when.get("min_estimated_value", ""),
-                        "Max est. value": when.get("max_estimated_value", ""),
                     })
                 st.dataframe(pd.DataFrame(rule_rows), use_container_width=True)
             else:
@@ -1205,37 +1166,24 @@ with tabs[0]:
                 rule_name = st.text_input("Rule name", value="Custom rule", key=f"name_{key}")
                 action = st.selectbox("Action", ["allow", "deny"], key=f"action_{key}")
                 partner_role_choice = st.multiselect("Partner role(s)", ["Implementation (SI)", "Influence", "Referral", "ISV"], default=[], key=f"roles_{key}")
-                stage_choice = st.multiselect("Stage(s)", ["Discovery", "Evaluation", "Commit", "Live"], default=[], key=f"stages_{key}")
-                use_range = st.checkbox("Set estimated value range", value=False, key=f"use_range_{key}")
-                min_val, max_val = (0.0, 100000.0)
-                if use_range:
-                    min_val, max_val = st.slider("Estimated value range", 0, 100000, (0, 100000), step=1000, key=f"range_{key}")
                 if st.button("Add rule", key=f"add_rule_{key}"):
-                    if use_range and min_val > max_val:
-                        st.error("Min cannot be greater than max.")
-                    else:
-                        new_rule = {
-                            "name": rule_name,
-                            "action": action,
-                            "when": {}
-                        }
-                        if partner_role_choice:
-                            new_rule["when"]["partner_role"] = partner_role_choice if len(partner_role_choice) > 1 else partner_role_choice[0]
-                        if stage_choice:
-                            new_rule["when"]["stage"] = stage_choice if len(stage_choice) > 1 else stage_choice[0]
-                        if use_range:
-                            new_rule["when"]["min_estimated_value"] = min_val
-                            new_rule["when"]["max_estimated_value"] = max_val
-                        if not partner_role_choice and not stage_choice and not use_range and action == "deny":
-                            st.warning("Deny-all rule would block everything. Consider narrowing conditions or add an allow-all catch-all below.")
-                        updated = rules + [new_rule]
-                        set_setting(key, json.dumps(updated, indent=2))
-                        st.success("Rule added.")
-                        if not preview_data.empty:
-                            match_count = sum(rule_matches(new_rule.get("when", {}), row) for _, row in preview_data.iterrows())
-                            st.info(f"Would match {match_count}/{len(preview_data)} existing links.")
-                        if applies_to_account:
-                            render_apply_summary(apply_rules_auto_assign(account_rollup_enabled))
+                    new_rule = {
+                        "name": rule_name,
+                        "action": action,
+                        "when": {}
+                    }
+                    if partner_role_choice:
+                        new_rule["when"]["partner_role"] = partner_role_choice if len(partner_role_choice) > 1 else partner_role_choice[0]
+                    if not partner_role_choice and action == "deny":
+                        st.warning("Deny-all rule would block everything. Consider narrowing conditions or add an allow-all catch-all below.")
+                    updated = rules + [new_rule]
+                    set_setting(key, json.dumps(updated, indent=2))
+                    st.success("Rule added.")
+                    if not preview_data.empty:
+                        match_count = sum(rule_matches(new_rule.get("when", {}), row) for _, row in preview_data.iterrows())
+                        st.info(f"Would match {match_count}/{len(preview_data)} existing links.")
+                    if applies_to_account:
+                        render_apply_summary(apply_rules_auto_assign(account_rollup_enabled))
                 if rules:
                     edit_idx = st.selectbox("Select rule to edit", list(range(len(rules))), format_func=lambda i: rules[i].get("name", f"Rule {i+1}"), key=f"edit_idx_{key}")
                     to_edit = rules[edit_idx]
@@ -1244,17 +1192,7 @@ with tabs[0]:
                     e_roles = to_edit.get("when", {}).get("partner_role", [])
                     if isinstance(e_roles, str):
                         e_roles = [e_roles]
-                    e_stages = to_edit.get("when", {}).get("stage", [])
-                    if isinstance(e_stages, str):
-                        e_stages = [e_stages]
                     e_roles_sel = st.multiselect("Edit partner role(s)", ["Implementation (SI)", "Influence", "Referral", "ISV"], default=e_roles, key=f"edit_roles_{key}")
-                    e_stages_sel = st.multiselect("Edit stage(s)", ["Discovery", "Evaluation", "Commit", "Live"], default=e_stages, key=f"edit_stages_{key}")
-                    e_range_enabled = "min_estimated_value" in to_edit.get("when", {}) or "max_estimated_value" in to_edit.get("when", {})
-                    e_min = float(to_edit.get("when", {}).get("min_estimated_value", 0))
-                    e_max = float(to_edit.get("when", {}).get("max_estimated_value", 100000))
-                    e_use_range = st.checkbox("Edit estimated value range", value=e_range_enabled, key=f"edit_range_{key}")
-                    if e_use_range:
-                        e_min, e_max = st.slider("Edit estimated value range", 0, 100000, (int(e_min), int(e_max)), step=1000, key=f"edit_slider_{key}")
                     if st.button("Save edits", key=f"save_edits_{key}"):
                         updated = []
                         for i, r in enumerate(rules):
@@ -1264,11 +1202,6 @@ with tabs[0]:
                             new_r = {"name": e_name, "action": e_action, "when": {}}
                             if e_roles_sel:
                                 new_r["when"]["partner_role"] = e_roles_sel if len(e_roles_sel) > 1 else e_roles_sel[0]
-                            if e_stages_sel:
-                                new_r["when"]["stage"] = e_stages_sel if len(e_stages_sel) > 1 else e_stages_sel[0]
-                            if e_use_range:
-                                new_r["when"]["min_estimated_value"] = e_min
-                                new_r["when"]["max_estimated_value"] = e_max
                             updated.append(new_r)
                         set_setting(key, json.dumps(updated, indent=2))
                         st.success("Rule updated.")
@@ -1286,16 +1219,6 @@ with tabs[0]:
                     updated = rules + [{"name": "Allow all", "action": "allow", "when": {}}]
                     set_setting(key, json.dumps(updated, indent=2))
                     st.success("Allow-all rule added.")
-                    if applies_to_account:
-                        render_apply_summary(apply_rules_auto_assign(account_rollup_enabled))
-                if st.button("Add block SI in Commit", key=f"block_template_{key}"):
-                    updated = rules + [{
-                        "name": "Block SI in Commit",
-                        "action": "deny",
-                        "when": {"partner_role": "Implementation (SI)", "stage": "Commit"}
-                    }]
-                    set_setting(key, json.dumps(updated, indent=2))
-                    st.success("Template rule added.")
                     if applies_to_account:
                         render_apply_summary(apply_rules_auto_assign(account_rollup_enabled))
                 suggestion = st.session_state.get(f"ai_rule_suggestion_{key}")
