@@ -1057,10 +1057,6 @@ with tabs[0]:
         enforce_default = should_enforce_split_cap()
         si_mode_default = get_setting("si_auto_split_mode", "live_share")
         si_fixed_default = float(get_setting("si_fixed_percent", "20"))
-        inf_default = float(get_setting("default_split_influence", "10"))
-        ref_default = float(get_setting("default_split_referral", "15"))
-        isv_default = float(get_setting("default_split_isv", "10"))
-        tag_source_default = get_setting("use_case_tag_source", "hybrid")
         with st.form("settings_form"):
             enforce_cap = st.checkbox(
                 "Enforce account split cap (≤ 100% total per account)",
@@ -1077,30 +1073,11 @@ with tabs[0]:
                 si_fixed = st.slider("SI fixed percent", 0, 100, int(si_fixed_default))
             else:
                 si_fixed = si_fixed_default
-            col_defaults = st.columns(3)
-            with col_defaults[0]:
-                inf_split = st.slider("Default % Influence", 0, 100, int(inf_default))
-            with col_defaults[1]:
-                ref_split = st.slider("Default % Referral", 0, 100, int(ref_default))
-            with col_defaults[2]:
-                isv_split = st.slider("Default % ISV", 0, 100, int(isv_default))
-            tag_source = st.selectbox(
-                "Use case tagging source",
-                ["hybrid", "app", "crm"],
-                index=["hybrid", "app", "crm"].index(tag_source_default if tag_source_default in ["hybrid", "app", "crm"] else "hybrid"),
-                help="hybrid = accept CRM tags and allow in-app edits; app = tagging happens here; crm = treat CRM tags as source-of-truth and show them read-only.",
-            )
-            allow_manual = st.checkbox("Allow manual split override", value=get_setting_bool("allow_manual_split_override", False), help="When off, splits are auto-assigned from rules/defaults without sliders.")
             save_settings = st.form_submit_button("Save settings")
             if save_settings:
                 set_setting_bool("enforce_split_cap", enforce_cap)
                 set_setting("si_auto_split_mode", si_mode)
                 set_setting("si_fixed_percent", str(si_fixed))
-                set_setting("default_split_influence", str(inf_split))
-                set_setting("default_split_referral", str(ref_split))
-                set_setting("default_split_isv", str(isv_split))
-                set_setting("use_case_tag_source", tag_source)
-                set_setting_bool("allow_manual_split_override", allow_manual)
                 st.success(f"Saved. Enforce split cap = {'ON' if enforce_cap else 'OFF'}.")
 
     with settings_right:
@@ -1137,7 +1114,7 @@ with tabs[0]:
         if not enabled:
             st.warning("Disabled for current model.")
             return
-        st.caption("Rules are partner-role based. Field-level conditions (stage, amount) are hidden to keep things simple.")
+        st.caption("Rules are created via AI suggestions or natural language below—no manual field-picking needed.")
         rules = load_rules(key)
         if f"ai_rule_suggestion_{key}" not in st.session_state:
             st.session_state[f"ai_rule_suggestion_{key}"] = None
@@ -1158,79 +1135,31 @@ with tabs[0]:
                     })
                 st.dataframe(pd.DataFrame(rule_rows), use_container_width=True)
             else:
-                st.info("No rules yet. Add one below.")
+                st.info("No rules yet. Use AI suggestion or the natural-language converter below to add one.")
 
-        add_col1, add_col2 = st.columns([3, 1])
-        with add_col1:
-            with st.expander("Add or edit rule", expanded=True):
-                rule_name = st.text_input("Rule name", value="Custom rule", key=f"name_{key}")
-                action = st.selectbox("Action", ["allow", "deny"], key=f"action_{key}")
-                partner_role_choice = st.multiselect("Partner role(s)", ["Implementation (SI)", "Influence", "Referral", "ISV"], default=[], key=f"roles_{key}")
-                if st.button("Add rule", key=f"add_rule_{key}"):
-                    new_rule = {
-                        "name": rule_name,
-                        "action": action,
-                        "when": {}
-                    }
-                    if partner_role_choice:
-                        new_rule["when"]["partner_role"] = partner_role_choice if len(partner_role_choice) > 1 else partner_role_choice[0]
-                    if not partner_role_choice and action == "deny":
-                        st.warning("Deny-all rule would block everything. Consider narrowing conditions or add an allow-all catch-all below.")
-                    updated = rules + [new_rule]
+        with st.expander("Quick actions", expanded=False):
+            if rules:
+                delete_idx = st.selectbox("Select rule to delete", list(range(len(rules))), format_func=lambda i: rules[i].get("name", f"Rule {i+1}"), key=f"delete_idx_{key}")
+                if st.button("Delete selected rule", key=f"delete_rule_{key}"):
+                    updated = [r for i, r in enumerate(rules) if i != delete_idx]
                     set_setting(key, json.dumps(updated, indent=2))
-                    st.success("Rule added.")
-                    if not preview_data.empty:
-                        match_count = sum(rule_matches(new_rule.get("when", {}), row) for _, row in preview_data.iterrows())
-                        st.info(f"Would match {match_count}/{len(preview_data)} existing links.")
-                    if applies_to_account:
-                        render_apply_summary(apply_rules_auto_assign(account_rollup_enabled))
-                if rules:
-                    edit_idx = st.selectbox("Select rule to edit", list(range(len(rules))), format_func=lambda i: rules[i].get("name", f"Rule {i+1}"), key=f"edit_idx_{key}")
-                    to_edit = rules[edit_idx]
-                    e_name = st.text_input("Edit name", value=to_edit.get("name", ""), key=f"edit_name_{key}")
-                    e_action = st.selectbox("Edit action", ["allow", "deny"], index=["allow", "deny"].index(to_edit.get("action", "allow")), key=f"edit_action_{key}")
-                    e_roles = to_edit.get("when", {}).get("partner_role", [])
-                    if isinstance(e_roles, str):
-                        e_roles = [e_roles]
-                    e_roles_sel = st.multiselect("Edit partner role(s)", ["Implementation (SI)", "Influence", "Referral", "ISV"], default=e_roles, key=f"edit_roles_{key}")
-                    if st.button("Save edits", key=f"save_edits_{key}"):
-                        updated = []
-                        for i, r in enumerate(rules):
-                            if i != edit_idx:
-                                updated.append(r)
-                                continue
-                            new_r = {"name": e_name, "action": e_action, "when": {}}
-                            if e_roles_sel:
-                                new_r["when"]["partner_role"] = e_roles_sel if len(e_roles_sel) > 1 else e_roles_sel[0]
-                            updated.append(new_r)
-                        set_setting(key, json.dumps(updated, indent=2))
-                        st.success("Rule updated.")
-                        if applies_to_account:
-                            render_apply_summary(apply_rules_auto_assign(account_rollup_enabled))
-        with add_col2:
-            with st.expander("Quick actions", expanded=False):
-                if rules:
-                    delete_idx = st.selectbox("Select rule to delete", list(range(len(rules))), format_func=lambda i: rules[i].get("name", f"Rule {i+1}"), key=f"delete_idx_{key}")
-                    if st.button("Delete selected rule", key=f"delete_rule_{key}"):
-                        updated = [r for i, r in enumerate(rules) if i != delete_idx]
-                        set_setting(key, json.dumps(updated, indent=2))
-                        st.success("Rule deleted.")
-                if st.button("Add allow-all", key=f"allow_all_{key}"):
-                    updated = rules + [{"name": "Allow all", "action": "allow", "when": {}}]
+                    st.success("Rule deleted.")
+            if st.button("Add allow-all", key=f"allow_all_{key}"):
+                updated = rules + [{"name": "Allow all", "action": "allow", "when": {}}]
+                set_setting(key, json.dumps(updated, indent=2))
+                st.success("Allow-all rule added.")
+                if applies_to_account:
+                    render_apply_summary(apply_rules_auto_assign(account_rollup_enabled))
+            suggestion = st.session_state.get(f"ai_rule_suggestion_{key}")
+            if st.button("Generate suggestion", key=f"gen_suggest_{key}"):
+                st.session_state[f"ai_rule_suggestion_{key}"] = generate_rule_suggestion()
+            if suggestion:
+                st.code(json.dumps(suggestion, indent=2), language="json")
+                if st.button("Use suggestion", key=f"use_suggest_{key}"):
+                    updated = rules + [suggestion]
                     set_setting(key, json.dumps(updated, indent=2))
-                    st.success("Allow-all rule added.")
-                    if applies_to_account:
-                        render_apply_summary(apply_rules_auto_assign(account_rollup_enabled))
-                suggestion = st.session_state.get(f"ai_rule_suggestion_{key}")
-                if st.button("Generate suggestion", key=f"gen_suggest_{key}"):
-                    st.session_state[f"ai_rule_suggestion_{key}"] = generate_rule_suggestion()
-                if suggestion:
-                    st.code(json.dumps(suggestion, indent=2), language="json")
-                    if st.button("Use suggestion", key=f"use_suggest_{key}"):
-                        updated = rules + [suggestion]
-                        set_setting(key, json.dumps(updated, indent=2))
-                        st.success("Suggested rule added.")
-                        st.session_state[f"ai_rule_suggestion_{key}"] = None
+                    st.success("Suggested rule added.")
+                    st.session_state[f"ai_rule_suggestion_{key}"] = None
 
         with st.expander("Preview / Apply", expanded=False):
             if st.button("Preview matches", key=f"preview_{key}"):
