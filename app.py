@@ -90,6 +90,8 @@ DEFAULT_SETTINGS = {
     ], indent=2),
 }
 
+PARTNER_ROLES = ["Implementation (SI)", "Influence", "Referral", "ISV"]
+
 # ----------------------------
 # DB helpers
 # ----------------------------
@@ -468,7 +470,7 @@ def generate_rule_suggestion() -> dict:
         typical_val = float(use_cases["estimated_value"].dropna().median())
     # Nudge threshold above the typical value to focus on higher-risk items
     threshold = max(2000, min(100000, int(round((typical_val * 1.2) / 1000.0) * 1000)))
-    role = random.choice(["Implementation (SI)", "Influence", "Referral", "ISV"])
+    role = random.choice(PARTNER_ROLES)
     return {
         "name": f"AI suggestion: Gate {role} in {common_stage}",
         "action": "deny",
@@ -871,6 +873,51 @@ def generate_ai_recommendations(account_id: str) -> Tuple[list, Optional[str]]:
         else:
             recs = []
     return recs, err
+
+
+def _normalize_partner_role(raw: Optional[str]) -> Optional[str]:
+    if not raw:
+        return None
+    raw_lower = str(raw).strip().lower()
+    for role in PARTNER_ROLES:
+        if raw_lower == role.lower():
+            return role
+    if "implement" in raw_lower or "si" in raw_lower:
+        return "Implementation (SI)"
+    if "refer" in raw_lower:
+        return "Referral"
+    if "isv" in raw_lower or "software" in raw_lower:
+        return "ISV"
+    if "influenc" in raw_lower:
+        return "Influence"
+    return None
+
+
+def infer_partner_role(account_name: str, use_case_name: str, partner_name: str, context: str) -> Tuple[str, Optional[str]]:
+    """
+    Use the LLM to select a single partner role. Falls back to simple heuristics.
+    """
+    prompt = (
+        "Pick one partner role from this list and return JSON with a 'role' key: "
+        f"{', '.join(PARTNER_ROLES)}. "
+        "Stay concise and avoid explanations.\n"
+        f"Account: {account_name}\nUse case: {use_case_name}\nPartner: {partner_name}\nContext: {context or 'n/a'}"
+    )
+    ok, content, err = call_llm(prompt, system="Return JSON with a single key: role.")
+    role = None
+    if ok and content:
+        try:
+            parsed = json.loads(content)
+            role = _normalize_partner_role(parsed.get("role"))
+        except Exception:
+            role = None
+
+    if role is None:
+        combined = " ".join([account_name or "", use_case_name or "", partner_name or "", context or ""]).lower()
+        role = _normalize_partner_role(combined)
+    if role is None:
+        role = "Influence"
+    return role, err
 
 
 def apply_recommendations(account_id: str, recs: list) -> dict:
@@ -1302,9 +1349,7 @@ with tabs[1]:
         JOIN accounts a ON a.account_id = u.account_id
         ORDER BY a.account_name, u.use_case_name;
     """)
-    manual_override_allowed = get_setting_bool("allow_manual_split_override", False)
-    if not manual_override_allowed:
-        st.caption("Auto-assign mode is ON. Enable manual overrides in Admin if you want sliders.")
+    st.caption("Auto-assign mode is ON. Splits and roles come from AI/heuristics.")
     if account_filter != "All":
         sel_id = account_filter.split("(")[-1].rstrip(")")
         use_cases = use_cases[use_cases["account_id"] == sel_id]
@@ -1375,9 +1420,8 @@ with tabs[1]:
 
         uc_choice = st.selectbox("Use case", list(uc_label_map.keys()))
         p_choice = st.selectbox("Partner", list(p_label_map.keys()))
-        role_choice = st.selectbox("Partner role", ["Implementation (SI)", "Influence", "Referral", "ISV"])
+        role_context = st.text_area("Describe partner involvement (optional, used by AI)", height=80)
 
-        # Auto-calculation rule for Implementation partners: allocate split based on use case's share of live or total value.
         selected_uc = uc_label_map[uc_choice]
         uc_row = use_cases[use_cases["use_case_id"] == selected_uc].iloc[0]
         uc_value = float(uc_row["estimated_value"] or 0)
@@ -1392,46 +1436,38 @@ with tabs[1]:
         ]["estimated_value"].sum()
         base_total = account_live_total if account_live_total > 0 else account_all_total
 
-        auto_split = None
-        if role_choice == "Implementation (SI)":
-            auto_split, auto_reason = compute_si_auto_split(uc_value, account_live_total, account_all_total, si_auto_mode)
-            if auto_split is not None:
-                source_label = "live total" if account_live_total > 0 else "total estimated (no live use cases)"
-                st.info(
-                    f"Auto split for SI: use case value {uc_value:,.0f} / {source_label} {base_total:,.0f} "
-                    f"= {auto_split*100:.0f}% ({auto_reason})"
-                )
-                st.metric("Applied split %", f"{auto_split*100:.0f}%", help="Auto-applied based on Implementation (SI) rule.")
-                split = auto_split
-                if manual_override_allowed:
-                    use_override = st.checkbox("Override auto-calculated split", value=False)
-                    if use_override:
-                        split = st.slider("Custom split %", 0, 100, int(auto_split * 100)) / 100.0
-            else:
-                if si_auto_mode == "manual_only":
-                    st.warning("Manual-only mode: set the split for Implementation (SI).")
-                    default_manual = int(float(get_setting("si_fixed_percent", "20")))
-                    split = st.slider("Split % for account-level credit", 0, 100, default_manual) / 100.0
+        if st.button("Save use case ↔ partner (auto rollup)"):
+            role_choice, role_err = infer_partner_role(
+                account_name=uc_row["account_name"],
+                use_case_name=uc_row["use_case_name"],
+                partner_name=p_choice,
+                context=role_context,
+            )
+            st.info(f"Inferred partner role: {role_choice}")
+            if role_err:
+                st.caption(f"LLM note: {role_err}")
+            # Auto-calculation rule for Implementation partners: allocate split based on use case's share of live or total value.
+            if role_choice == "Implementation (SI)":
+                auto_split, auto_reason = compute_si_auto_split(uc_value, account_live_total, account_all_total, si_auto_mode)
+                if auto_split is not None:
+                    source_label = "live total" if account_live_total > 0 else "total estimated (no live use cases)"
+                    st.info(
+                        f"Auto split for SI: use case value {uc_value:,.0f} / {source_label} {base_total:,.0f} "
+                        f"= {auto_split*100:.0f}% ({auto_reason})"
+                    )
+                    split = auto_split
                 else:
                     fallback = float(get_setting("si_fixed_percent", "20")) / 100.0
                     st.warning(f"Auto split not available for this SI rule/data. Applying fallback {fallback*100:.0f}% (change in Admin settings).")
                     split = fallback
-                    if manual_override_allowed:
-                        split = st.slider("Split % for account-level credit", 0, 100, int(fallback * 100)) / 100.0
-        else:
-            default_map = {
-                "Influence": inf_default,
-                "Referral": ref_default,
-                "ISV": isv_default,
-            }
-            default_val = int(default_map.get(role_choice, 10))
-            if manual_override_allowed:
-                split = st.slider("Split % for account-level credit", 0, 100, default_val) / 100.0
             else:
-                split = default_val / 100.0
-                st.info(f"Auto-assigned {default_val}% based on defaults. Enable manual override in Admin to customize.")
-
-        if st.button("Save use case ↔ partner (auto rollup)"):
+                default_map = {
+                    "Influence": inf_default,
+                    "Referral": ref_default,
+                    "ISV": isv_default,
+                }
+                split = default_map.get(role_choice, 10) / 100.0
+                st.info(f"Auto-assigned {split*100:.0f}% based on role defaults.")
             if get_setting_bool("enable_use_case_rules", True):
                 uc_allowed, uc_msg, _, uc_rule_idx, uc_rule_name = evaluate_rules({
                     "partner_role": role_choice,
