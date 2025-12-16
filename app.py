@@ -675,6 +675,100 @@ def recompute_attribution_ledger(days: int = 30) -> dict:
     return {"inserted": inserted, "skipped": skipped, "blocked": blocked}
 
 
+def simulate_rule_impact(key: str, days: int = 60) -> dict:
+    """
+    Dry-run rules against current links without mutating data.
+    For account_rules, we report revenue at risk in the window.
+    For use_case_rules, we report estimated value affected.
+    """
+    window_start = (date.today() - timedelta(days=days)).isoformat()
+    results = {
+        "target": key,
+        "lookback_days": days,
+        "checked": 0,
+        "allowed": 0,
+        "blocked": 0,
+        "no_context": 0,
+        "revenue_at_risk": 0.0,
+        "estimated_value_blocked": 0.0,
+        "details": [],
+    }
+
+    if key == "account_rules":
+        aps = read_sql("""
+            SELECT ap.account_id, ap.partner_id, ap.source, p.partner_name
+            FROM account_partners ap
+            JOIN partners p ON p.partner_id = ap.partner_id;
+        """)
+        if aps.empty:
+            results["details"].append("No account partners to evaluate.")
+            return results
+
+        ctx = read_sql("""
+            SELECT ucp.partner_id, u.account_id, ucp.partner_role, u.stage, u.estimated_value
+            FROM use_case_partners ucp
+            JOIN use_cases u ON u.use_case_id = ucp.use_case_id;
+        """)
+        ledger = read_sql("""
+            SELECT account_id, actor_id, SUM(attributed_amount) AS amt
+            FROM attribution_events
+            WHERE revenue_date >= ?
+            GROUP BY account_id, actor_id;
+        """, (window_start,))
+        for _, row in aps.iterrows():
+            results["checked"] += 1
+            acct = row["account_id"]
+            pid = row["partner_id"]
+            ctx_rows = ctx[(ctx["account_id"] == acct) & (ctx["partner_id"] == pid)]
+            role = ctx_rows["partner_role"].iloc[0] if not ctx_rows.empty else None
+            stage_val = ctx_rows["stage"].iloc[0] if not ctx_rows.empty else None
+            est_val = float(ctx_rows["estimated_value"].iloc[0]) if (not ctx_rows.empty and pd.notnull(ctx_rows["estimated_value"].iloc[0])) else None
+            allowed, msg, _, _, rule_name = evaluate_rules(
+                {"partner_role": role, "stage": stage_val, "estimated_value": est_val},
+                key="account_rules",
+            )
+            ledger_row = ledger[(ledger["account_id"] == acct) & (ledger["actor_id"] == pid)]
+            amt = float(ledger_row["amt"].iloc[0]) if not ledger_row.empty else 0.0
+            if allowed:
+                results["allowed"] += 1
+            else:
+                results["blocked"] += 1
+                results["revenue_at_risk"] += amt
+                results["details"].append(f"{acct}/{pid}: {msg} (rule={rule_name or 'n/a'}, {amt:,.0f} revenue in last {days}d)")
+            if ctx_rows.empty:
+                results["no_context"] += 1
+    else:
+        ucp = read_sql("""
+            SELECT ucp.use_case_id, ucp.partner_id, ucp.partner_role, u.stage, u.estimated_value, u.use_case_name, u.account_id
+            FROM use_case_partners ucp
+            JOIN use_cases u ON u.use_case_id = ucp.use_case_id;
+        """)
+        if ucp.empty:
+            results["details"].append("No use case links to evaluate.")
+            return results
+        for _, row in ucp.iterrows():
+            results["checked"] += 1
+            allowed, msg, _, _, rule_name = evaluate_rules(
+                {
+                    "partner_role": row["partner_role"],
+                    "stage": row["stage"],
+                    "estimated_value": float(row["estimated_value"] or 0),
+                },
+                key="use_case_rules",
+            )
+            val = float(row["estimated_value"] or 0)
+            if allowed:
+                results["allowed"] += 1
+            else:
+                results["blocked"] += 1
+                results["estimated_value_blocked"] += val
+                results["details"].append(
+                    f"{row['use_case_name']} ({row['account_id']}): {msg} "
+                    f"(rule={rule_name or 'n/a'}, est value {val:,.0f})"
+                )
+    return results
+
+
 def recompute_explanations(account_id: str):
     today_str = date.today().isoformat()
     aps = read_sql("""
@@ -1265,6 +1359,39 @@ with tabs[0]:
             st.caption(f"LLM note: {err}")
 
     st.markdown("---")
+    st.subheader("Rule impact simulator")
+    sim_cols = st.columns([2, 1, 1])
+    sim_target = sim_cols[0].selectbox(
+        "Which rule set?",
+        ["account_rules", "use_case_rules"],
+        format_func=lambda k: "Account rules (rollup/ledger)" if k == "account_rules" else "Use case rules (link gating)",
+    )
+    lookback = sim_cols[1].slider(
+        "Lookback (days, for revenue at risk)",
+        min_value=7,
+        max_value=180,
+        value=60,
+        help="Used for revenue-at-risk when simulating account rules.",
+        disabled=sim_target != "account_rules",
+    )
+    if sim_cols[2].button("Run simulation"):
+        res = simulate_rule_impact(sim_target, days=lookback if sim_target == "account_rules" else 60)
+        st.info(
+            f"Checked {res['checked']} links. Allowed {res['allowed']}, blocked {res['blocked']}, "
+            f"missing context {res['no_context']}."
+        )
+        metric_cols = st.columns(2)
+        if sim_target == "account_rules":
+            metric_cols[0].metric("Revenue at risk", f"{res['revenue_at_risk']:,.0f}")
+            metric_cols[1].metric("Lookback (days)", res["lookback_days"])
+        else:
+            metric_cols[0].metric("Est. value blocked", f"{res['estimated_value_blocked']:,.0f}")
+            metric_cols[1].metric("Lookback (days)", res["lookback_days"])
+        if res.get("details"):
+            with st.expander("Blocked details (sample)"):
+                st.write("\n".join(res["details"][:15]))
+
+    st.markdown("---")
     st.subheader("AI recommendations (account-level)")
     acct_map_ai = {f"{row['account_name']} ({row['account_id']})": row["account_id"] for _, row in accounts.iterrows()}
     if acct_map_ai:
@@ -1593,24 +1720,42 @@ with tabs[1]:
                     st.success("Manual AccountPartner saved (source=manual). Future auto rollups will not overwrite this row.")
 
     st.markdown("---")
-    st.subheader("Partner impact (60d snapshot)")
+    st.subheader("Partner leaderboard")
+    default_range = (date.today() - timedelta(days=60), date.today())
+    date_range = st.date_input("Date range for leaderboard", value=default_range)
+    if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
+        start_date, end_date = date_range
+    else:
+        start_date = default_range[0]
+        end_date = default_range[1]
+    start_str = start_date.isoformat()
+    end_str = end_date.isoformat()
     partner_impact = read_sql("""
       SELECT
         p.partner_name,
+        p.partner_id,
         COUNT(DISTINCT ae.account_id) AS accounts_influenced,
-        ROUND(SUM(ae.attributed_amount), 2) AS total_attributed_revenue_60d
+        ROUND(SUM(ae.attributed_amount), 2) AS total_attributed_revenue,
+        COUNT(DISTINCT ae.revenue_date) AS active_days
       FROM attribution_events ae
       JOIN partners p ON p.partner_id = ae.actor_id
-      WHERE ae.revenue_date >= date('now', '-60 day')
-      GROUP BY p.partner_name
-      ORDER BY total_attributed_revenue_60d DESC;
-    """)
+      WHERE ae.revenue_date BETWEEN ? AND ?
+      GROUP BY p.partner_name, p.partner_id
+      ORDER BY total_attributed_revenue DESC;
+    """, (start_str, end_str))
     if partner_filter != "All":
         partner_impact = partner_impact[partner_impact["partner_name"] == partner_filter]
     if partner_impact.empty:
-        st.info("No partner impact yet. Link a partner to a use case or create a manual AccountPartner.")
+        st.info("No partner impact yet in this window. Link a partner to a use case or create a manual AccountPartner.")
     else:
         st.dataframe(partner_impact, use_container_width=True)
+        csv_data = partner_impact.to_csv(index=False)
+        st.download_button(
+            "Download leaderboard CSV",
+            data=csv_data,
+            file_name=f"partner_leaderboard_{start_str}_to_{end_str}.csv",
+            mime="text/csv",
+        )
 
 # --- Tab 3: Account Drilldown ---
 with tabs[2]:
