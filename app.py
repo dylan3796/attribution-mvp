@@ -64,6 +64,10 @@ DEFAULT_SETTINGS = {
     "allow_manual_split_override": "false",
     "enable_use_case_rules": "true",
     "enable_account_rollup": "true",
+    "use_case_tag_source": "hybrid",
+    "prompt_rule_conversion": "Convert this rule description into JSON with keys name, action (allow/deny), when (partner_role?, stage?, min_estimated_value?, max_estimated_value?). Only return JSON.",
+    "prompt_relationship_summary": "Summarize account relationships with 3 concise bullets: health, risks, next steps.",
+    "prompt_ai_recommendations": "Recommend partner attributions. Return JSON list of {partner_id, recommended_role, recommended_split_percent, confidence, reasons}.",
     "schema_version": SCHEMA_VERSION,
     "account_rules": json.dumps([
         {
@@ -125,6 +129,7 @@ def init_db():
         use_case_name TEXT NOT NULL,
         stage TEXT,
         estimated_value REAL,
+        tag_source TEXT NOT NULL DEFAULT 'app',
         target_close_date TEXT,
         FOREIGN KEY (account_id) REFERENCES accounts(account_id)
     );
@@ -236,8 +241,12 @@ def init_db():
     ensure_column("use_cases", "stage", "stage TEXT")
     ensure_column("use_cases", "estimated_value", "estimated_value REAL")
     ensure_column("use_cases", "target_close_date", "target_close_date TEXT")
+    ensure_column("use_cases", "tag_source", "tag_source TEXT DEFAULT 'app'")
     ensure_column("account_partners", "source", "source TEXT NOT NULL DEFAULT 'auto'")
     ensure_column("settings", "setting_value", "setting_value TEXT NOT NULL")
+
+    # backfill tag_source if missing
+    run_sql("UPDATE use_cases SET tag_source = 'app' WHERE tag_source IS NULL OR tag_source = '' ;")
 
     # ensure settings table has defaults
     existing_settings = read_sql("SELECT setting_key FROM settings;")
@@ -286,11 +295,11 @@ def seed_data_if_empty():
         ("UC5", "A4", "Real-time Personalization", "Evaluation", (date.today() + timedelta(days=30)).isoformat()),
         ("UC6", "A5", "Manufacturing QA Analytics", "Discovery", (date.today() + timedelta(days=60)).isoformat()),
     ]
-    use_cases = [(uc_id, acct, name, stage, sample_estimated(), tcd) for uc_id, acct, name, stage, tcd in use_case_specs]
+    use_cases = [(uc_id, acct, name, stage, sample_estimated(), tcd, "app") for uc_id, acct, name, stage, tcd in use_case_specs]
     for uc in use_cases:
         run_sql("""
-        INSERT INTO use_cases(use_case_id, account_id, use_case_name, stage, estimated_value, target_close_date)
-        VALUES (?, ?, ?, ?, ?, ?);
+        INSERT INTO use_cases(use_case_id, account_id, use_case_name, stage, estimated_value, target_close_date, tag_source)
+        VALUES (?, ?, ?, ?, ?, ?, ?);
         """, uc)
 
     # Revenue events: last 60 days
@@ -776,11 +785,8 @@ def _heuristic_rule_from_text(text: str) -> dict:
 
 
 def convert_nl_to_rule(text: str) -> Tuple[dict, Optional[str]]:
-    prompt = (
-        "Convert this rule description into JSON with keys name, action (allow/deny), when (partner_role?, stage?, "
-        "min_estimated_value?, max_estimated_value?). Only return JSON. Description:\n"
-        f"{text}"
-    )
+    base_prompt = get_setting("prompt_rule_conversion", DEFAULT_SETTINGS["prompt_rule_conversion"])
+    prompt = f"{base_prompt}\nDescription:\n{text}"
     ok, content, err = call_llm(prompt, system="Return JSON only.")
     rule = None
     if ok and content:
@@ -817,7 +823,8 @@ def generate_relationship_summary(account_id: str) -> Tuple[str, Optional[str]]:
     else:
         rows = [f"{row['activity_date']}: {row['activity_type']} ({row['notes']})" for _, row in activities.iterrows()]
         activity_txt = "; ".join(rows)
-    prompt = f"Summarize account relationships: {base_summary} Activities: {activity_txt}. Provide 3 bullets on health, risks, next steps."
+    base_prompt = get_setting("prompt_relationship_summary", DEFAULT_SETTINGS["prompt_relationship_summary"])
+    prompt = f"{base_prompt}\nAccount: {base_summary}\nActivities: {activity_txt}"
     ok, content, err = call_llm(prompt, system="Concise summary.")
     if ok and content:
         return content, None
@@ -829,9 +836,10 @@ def generate_relationship_summary(account_id: str) -> Tuple[str, Optional[str]]:
 def generate_ai_recommendations(account_id: str) -> Tuple[list, Optional[str]]:
     acct_name = read_sql("SELECT account_name FROM accounts WHERE account_id = ?;", (account_id,))
     acct_name = acct_name.loc[0, "account_name"] if not acct_name.empty else account_id
+    base_prompt = get_setting("prompt_ai_recommendations", DEFAULT_SETTINGS["prompt_ai_recommendations"])
     prompt = (
-        f"Recommend partner attributions for account {acct_name} ({account_id}). "
-        "Return JSON list of objects with partner_id, recommended_role, recommended_split_percent, confidence (0-1), reasons."
+        f"{base_prompt}\nAccount context: {acct_name} ({account_id}). "
+        "Use known partners if present; otherwise suggest from existing partners."
     )
     ok, content, err = call_llm(prompt, system="Return JSON only.")
     recs = None
@@ -977,12 +985,12 @@ def upsert_manual_account_partner(account_id: str, partner_id: str, split_percen
     return {"status": "upserted", "account_id": account_id}
 
 
-def create_use_case(account_id: str, use_case_name: str, stage: str, estimated_value: float, target_close_date: str):
+def create_use_case(account_id: str, use_case_name: str, stage: str, estimated_value: float, target_close_date: str, tag_source: str = "app"):
     use_case_id = f"UC-{uuid.uuid4().hex[:8].upper()}"
     run_sql("""
-    INSERT INTO use_cases(use_case_id, account_id, use_case_name, stage, estimated_value, target_close_date)
-    VALUES (?, ?, ?, ?, ?, ?);
-    """, (use_case_id, account_id, use_case_name, stage, estimated_value, target_close_date))
+    INSERT INTO use_cases(use_case_id, account_id, use_case_name, stage, estimated_value, target_close_date, tag_source)
+    VALUES (?, ?, ?, ?, ?, ?, ?);
+    """, (use_case_id, account_id, use_case_name, stage, estimated_value, target_close_date, tag_source))
     return use_case_id
 
 def reset_demo():
@@ -1052,6 +1060,7 @@ with tabs[0]:
         inf_default = float(get_setting("default_split_influence", "10"))
         ref_default = float(get_setting("default_split_referral", "15"))
         isv_default = float(get_setting("default_split_isv", "10"))
+        tag_source_default = get_setting("use_case_tag_source", "hybrid")
         with st.form("settings_form"):
             enforce_cap = st.checkbox(
                 "Enforce account split cap (≤ 100% total per account)",
@@ -1075,6 +1084,12 @@ with tabs[0]:
                 ref_split = st.slider("Default % Referral", 0, 100, int(ref_default))
             with col_defaults[2]:
                 isv_split = st.slider("Default % ISV", 0, 100, int(isv_default))
+            tag_source = st.selectbox(
+                "Use case tagging source",
+                ["hybrid", "app", "crm"],
+                index=["hybrid", "app", "crm"].index(tag_source_default if tag_source_default in ["hybrid", "app", "crm"] else "hybrid"),
+                help="hybrid = accept CRM tags and allow in-app edits; app = tagging happens here; crm = treat CRM tags as source-of-truth and show them read-only.",
+            )
             allow_manual = st.checkbox("Allow manual split override", value=get_setting_bool("allow_manual_split_override", False), help="When off, splits are auto-assigned from rules/defaults without sliders.")
             save_settings = st.form_submit_button("Save settings")
             if save_settings:
@@ -1084,6 +1099,7 @@ with tabs[0]:
                 set_setting("default_split_influence", str(inf_split))
                 set_setting("default_split_referral", str(ref_split))
                 set_setting("default_split_isv", str(isv_split))
+                set_setting("use_case_tag_source", tag_source)
                 set_setting_bool("allow_manual_split_override", allow_manual)
                 st.success(f"Saved. Enforce split cap = {'ON' if enforce_cap else 'OFF'}.")
 
@@ -1095,6 +1111,17 @@ with tabs[0]:
         if st.button("Recompute ledger (last 30 days)"):
             res = recompute_attribution_ledger(30)
             st.success(f"Ledger recomputed: {res['inserted']} rows, {res['blocked']} blocked, {res['skipped']} skipped.")
+        with st.expander("Field palette (use @field in prompts)", expanded=False):
+            field_groups = {
+                "Use cases": ["use_case_name", "stage", "estimated_value", "target_close_date", "tag_source"],
+                "Use case ↔ partner": ["partner_role", "created_at"],
+                "Accounts": ["account_id", "account_name"],
+                "Partners": ["partner_id", "partner_name"],
+                "Revenue events": ["revenue_date", "amount"],
+                "Activities": ["activity_type", "activity_date", "notes"],
+            }
+            for group, fields in field_groups.items():
+                st.write(f"- **{group}**: " + ", ".join(f"`@{f}`" for f in fields))
 
     st.markdown("---")
     st.markdown('<a id="rule-builder"></a>', unsafe_allow_html=True)
@@ -1111,6 +1138,7 @@ with tabs[0]:
             st.warning("Disabled for current model.")
             return
         rules = load_rules(key)
+        mode = st.radio("Mode", ["Preset (out-of-the-box)", "Custom"], horizontal=True, key=f"mode_{key}")
         if f"ai_rule_suggestion_{key}" not in st.session_state:
             st.session_state[f"ai_rule_suggestion_{key}"] = None
         preview_data = read_sql("""
@@ -1118,6 +1146,42 @@ with tabs[0]:
             FROM use_case_partners ucp
             JOIN use_cases u ON u.use_case_id = ucp.use_case_id;
         """)
+        if mode.startswith("Preset"):
+            st.info("Use presets as a starting point; you can switch to Custom to edit further.")
+            col_p1, col_p2 = st.columns(2)
+            with col_p1:
+                if st.button("Add preset: only Live rollups", key=f"preset_live_{key}"):
+                    preset = {"name": "Only Live use cases roll up", "action": "allow", "when": {"stage": "Live"}}
+                    updated = rules + [preset]
+                    set_setting(key, json.dumps(updated, indent=2))
+                    st.success("Preset added.")
+                    rules = updated
+                    if applies_to_account:
+                        render_apply_summary(apply_rules_auto_assign(account_rollup_enabled))
+                if st.button("Add preset: block SI < $50k", key=f"preset_si_{key}"):
+                    preset = {"name": "Block SI below 50k", "action": "deny", "when": {"partner_role": "Implementation (SI)", "max_estimated_value": 50000}}
+                    updated = rules + [preset]
+                    set_setting(key, json.dumps(updated, indent=2))
+                    st.success("Preset added.")
+                    rules = updated
+                    if applies_to_account:
+                        render_apply_summary(apply_rules_auto_assign(account_rollup_enabled))
+            with col_p2:
+                if st.button("Add preset: allow all fallback", key=f"preset_allow_{key}"):
+                    preset = {"name": "Allow all", "action": "allow", "when": {}}
+                    updated = rules + [preset]
+                    set_setting(key, json.dumps(updated, indent=2))
+                    st.success("Preset added.")
+                    rules = updated
+                    if applies_to_account:
+                        render_apply_summary(apply_rules_auto_assign(account_rollup_enabled))
+                if st.button("Clear all rules", key=f"clear_{key}"):
+                    set_setting(key, "[]")
+                    rules = []
+                    st.success("All rules cleared.")
+                    if applies_to_account:
+                        render_apply_summary(apply_rules_auto_assign(account_rollup_enabled))
+            st.markdown("---")
         with st.expander("Current rules", expanded=False):
             if rules:
                 rule_rows = []
@@ -1334,10 +1398,44 @@ with tabs[0]:
     else:
         st.info("No accounts found.")
 
+    st.markdown("---")
+    st.subheader("LLM prompt settings")
+    st.caption("Tune the prompts the AI features use. You can reference fields with @stage, @estimated_value, @created_at, etc.")
+    col_p1, col_p2 = st.columns(2)
+    with col_p1:
+        pr_rule = st.text_area(
+            "Rule conversion prompt",
+            value=get_setting("prompt_rule_conversion", DEFAULT_SETTINGS["prompt_rule_conversion"]),
+            height=120,
+        )
+        pr_summary = st.text_area(
+            "Relationship summary prompt",
+            value=get_setting("prompt_relationship_summary", DEFAULT_SETTINGS["prompt_relationship_summary"]),
+            height=120,
+        )
+    with col_p2:
+        pr_recs = st.text_area(
+            "AI recommendation prompt",
+            value=get_setting("prompt_ai_recommendations", DEFAULT_SETTINGS["prompt_ai_recommendations"]),
+            height=120,
+        )
+    if st.button("Save prompts"):
+        set_setting("prompt_rule_conversion", pr_rule)
+        set_setting("prompt_relationship_summary", pr_summary)
+        set_setting("prompt_ai_recommendations", pr_recs)
+        st.success("Prompts updated.")
+
 # --- Tab 2: Relationships ---
 with tabs[1]:
     st.subheader("Catalog & links")
     st.caption("Accounts, use cases, and partner links in one place. Imported CRM links will appear here.")
+    tag_source_setting = get_setting("use_case_tag_source", "hybrid")
+    if tag_source_setting == "crm":
+        st.info("Use case tags come from your CRM. Update stage/value in the CRM; this view stays read-only for tags.")
+    elif tag_source_setting == "app":
+        st.info("Tagging happens here. Use this table to manage stages/values; CRM tags are ignored.")
+    else:
+        st.info("Hybrid mode: accept CRM-provided tags and allow in-app updates where needed.")
     filter_cols = st.columns(3)
     with filter_cols[0]:
         account_filter = st.selectbox("Filter by account", ["All"] + [f"{row['account_name']} ({row['account_id']})" for _, row in accounts.iterrows()])
@@ -1347,7 +1445,7 @@ with tabs[1]:
         partner_filter = st.selectbox("Filter by partner", ["All"] + [row["partner_name"] for _, row in read_sql("SELECT partner_name FROM partners ORDER BY partner_name;").iterrows()])
 
     use_cases = read_sql("""
-        SELECT u.use_case_id, u.use_case_name, u.stage, u.estimated_value, u.target_close_date, a.account_name, a.account_id
+        SELECT u.use_case_id, u.use_case_name, u.stage, u.estimated_value, u.target_close_date, u.tag_source, a.account_name, a.account_id
         FROM use_cases u
         JOIN accounts a ON a.account_id = u.account_id
         ORDER BY a.account_name, u.use_case_name;
@@ -1394,10 +1492,17 @@ with tabs[1]:
     if use_cases.empty:
         st.info("No use cases available. Add them to the database to enable attribution.")
     else:
-        st.dataframe(use_cases, use_container_width=True)
+        display_uc = use_cases.rename(columns={"use_case_name": "Use case", "stage": "Stage", "estimated_value": "Est. value", "target_close_date": "Target close", "account_name": "Account", "tag_source": "Tag source"})
+        st.dataframe(display_uc, use_container_width=True)
 
     st.markdown("---")
     st.subheader("Link partner to use case (auto-rollup to AccountPartner)")
+    if tag_source_setting == "crm":
+        st.warning("Use case attributes (stage/value) are sourced from CRM. Update them there; linking here will still respect CRM tags.")
+    elif tag_source_setting == "app":
+        st.caption("Use case tags live here. Adjust them in-app as needed.")
+    else:
+        st.caption("Hybrid tagging: we keep the tag_source on each use case to show whether it came from CRM or in-app edits.")
     partners = read_sql("SELECT partner_id, partner_name FROM partners ORDER BY partner_name;")
 
     if use_cases.empty or partners.empty:
