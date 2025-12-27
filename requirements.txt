@@ -1,3 +1,13 @@
 streamlit
 pandas
 openai
+python-dotenv
+
+# Testing
+pytest
+pytest-cov
+
+# Development tools
+black
+flake8
+mypy
