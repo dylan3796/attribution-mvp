@@ -242,6 +242,7 @@ class LedgerEntry:
     rule_id: int                        # FK to AttributionRule
     calculation_timestamp: datetime
     override_by: Optional[str] = None   # User who manually overrode (if applicable)
+    override_reason: Optional[str] = None  # Reason for manual override (required for audit compliance)
     audit_trail: Dict[str, Any] = field(default_factory=dict)  # Calculation steps, filters applied, etc.
     created_at: datetime = field(default_factory=datetime.now)
 

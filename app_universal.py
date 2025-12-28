@@ -355,8 +355,22 @@ with tabs[0]:
 
     # Get data using new architecture
     with st.spinner("📊 Loading dashboard data..."):
-        revenue_df = get_revenue_as_dataframe()
-        attribution_df = get_ledger_as_dataframe()
+        try:
+            revenue_df = get_revenue_as_dataframe()
+            attribution_df = get_ledger_as_dataframe()
+        except Exception as e:
+            st.error("⚠️ **Failed to load dashboard data**")
+            st.markdown(f"""
+            **Error:** {str(e)}
+
+            **Troubleshooting steps:**
+            1. Check if data was imported correctly in the Data Import tab
+            2. Verify attribution rules exist in Rules & Templates tab
+            3. Try recalculating attribution in Ledger Explorer
+
+            If the issue persists, please refresh the page.
+            """)
+            st.stop()
 
     # Show dashboard content only if data is loaded
     if len(st.session_state.targets) > 0:
@@ -534,27 +548,40 @@ with tabs[0]:
 
         with export_cols[2]:
             if not attribution_agg.empty:
-                # Generate executive PDF report
-                with st.spinner("📄 Generating executive PDF report..."):
-                    ledger_df = get_ledger_as_dataframe(st.session_state.ledger, st.session_state.partners)
+                try:
+                    # Generate executive PDF report
+                    with st.spinner("📄 Generating executive PDF report..."):
+                        ledger_df = get_ledger_as_dataframe()
 
-                    executive_pdf = generate_executive_report(
-                        report_date_range=f"{start_date} to {end_date}",
-                        total_revenue=total_revenue,
-                        total_attributed=total_attributed,
-                        attribution_coverage=attribution_coverage,
-                        unique_partners=unique_partners,
-                        top_partners=attribution_agg,
-                        ledger_df=ledger_df
+                        executive_pdf = generate_executive_report(
+                            report_date_range=f"{start_date} to {end_date}",
+                            total_revenue=total_revenue,
+                            total_attributed=total_attributed,
+                            attribution_coverage=attribution_coverage,
+                            unique_partners=unique_partners,
+                            top_partners=attribution_agg,
+                            ledger_df=ledger_df
+                        )
+                    st.download_button(
+                        "📊 Executive Report (PDF)",
+                        data=executive_pdf,
+                        file_name=f"attribution_executive_report_{datetime.now().strftime('%Y%m%d')}.pdf",
+                        mime="application/pdf",
+                        use_container_width=True,
+                        help="Beautiful executive report with charts and insights"
                     )
-                st.download_button(
-                    "📊 Executive Report (PDF)",
-                    data=executive_pdf,
-                    file_name=f"attribution_executive_report_{datetime.now().strftime('%Y%m%d')}.pdf",
-                    mime="application/pdf",
-                    use_container_width=True,
-                    help="Beautiful executive report with charts and insights"
-                )
+                except Exception as e:
+                    st.error("❌ Failed to generate PDF report")
+                    with st.expander("Show error details"):
+                        st.code(str(e))
+                    st.markdown("""
+                    **Try these steps:**
+                    1. Ensure attribution data is calculated
+                    2. Check that all partners have names
+                    3. Try downloading CSV/Excel instead
+                    """)
+            else:
+                st.info("💡 No attribution data available. Import data and run attribution to generate reports.")
 
         # Top Partners Table (PRESERVED)
         st.markdown("---")
