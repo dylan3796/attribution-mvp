@@ -358,8 +358,285 @@ with tabs[0]:
         revenue_df = get_revenue_as_dataframe()
         attribution_df = get_ledger_as_dataframe()
 
-    # EMPTY STATE: Show welcome card if no data loaded
-    if len(st.session_state.targets) == 0:
+    # Show dashboard content only if data is loaded
+    if len(st.session_state.targets) > 0:
+        # Filter by date range
+        if not revenue_df.empty:
+            revenue_df = revenue_df[
+                (pd.to_datetime(revenue_df["revenue_date"]) >= pd.to_datetime(start_date)) &
+                (pd.to_datetime(revenue_df["revenue_date"]) <= pd.to_datetime(end_date))
+            ]
+
+        if not attribution_df.empty:
+            attribution_df = attribution_df[
+                (pd.to_datetime(attribution_df["revenue_date"]) >= pd.to_datetime(start_date)) &
+                (pd.to_datetime(attribution_df["revenue_date"]) <= pd.to_datetime(end_date))
+            ]
+
+        # Aggregate attribution by partner (for charts)
+        if not attribution_df.empty:
+            attribution_agg = attribution_df.groupby(["partner_id", "partner_name"]).agg({
+                "attributed_amount": "sum",
+                "split_percent": "mean",
+                "account_id": "nunique"
+            }).reset_index()
+            attribution_agg.columns = ["partner_id", "partner_name", "attributed_amount", "avg_split_percent", "accounts_influenced"]
+        else:
+            attribution_agg = pd.DataFrame(columns=["partner_id", "partner_name", "attributed_amount", "avg_split_percent", "accounts_influenced"])
+
+        # KEY METRICS ROW (PRESERVED)
+        st.markdown("### Key Metrics")
+        metric_cols = st.columns(5)
+
+        total_revenue = float(revenue_df["amount"].sum()) if not revenue_df.empty else 0.0
+        total_attributed = float(attribution_agg["attributed_amount"].sum()) if not attribution_agg.empty else 0.0
+        attribution_coverage = (total_attributed / total_revenue * 100) if total_revenue > 0 else 0.0
+
+        with metric_cols[0]:
+            st.metric(
+                "Total Revenue",
+                f"${total_revenue:,.0f}",
+                delta=f"{dashboard_days}d period",
+                help="Sum of all closed opportunity/deal values in the selected time period"
+            )
+
+        with metric_cols[1]:
+            st.metric(
+                "Attributed Revenue",
+                f"${total_attributed:,.0f}",
+                delta=f"{attribution_coverage:.1f}% coverage",
+                help="Total revenue attributed to partners based on active attribution rules. Coverage shows % of revenue with partner attribution."
+            )
+
+        with metric_cols[2]:
+            unique_accounts = revenue_df["account_id"].nunique() if not revenue_df.empty else 0
+            st.metric(
+                "Active Accounts",
+                f"{unique_accounts}",
+                delta=f"{len(st.session_state.targets)} targets",
+                help="Number of unique customer accounts with closed deals in this period"
+            )
+
+        with metric_cols[3]:
+            unique_partners = attribution_agg["partner_id"].nunique() if not attribution_agg.empty else 0
+            st.metric(
+                "Partner Count",
+                f"{len(st.session_state.partners)}",
+                delta=f"{unique_partners} active",
+                help="Total partners in system. 'Active' shows partners with attributed revenue in this period."
+            )
+
+        with metric_cols[4]:
+            st.metric(
+                "Touchpoints",
+                f"{len(st.session_state.touchpoints)}",
+                delta=f"{len(st.session_state.ledger)} ledger entries",
+                help="Total partner interactions/engagements logged. Ledger entries show calculated attribution splits."
+            )
+
+        st.markdown("---")
+
+        # CHARTS ROW 1: Revenue and Attribution (PRESERVED)
+        st.markdown("### Revenue & Attribution Trends")
+        chart_col1, chart_col2 = st.columns(2)
+
+        with chart_col1:
+            st.plotly_chart(
+                create_revenue_over_time_chart(revenue_df),
+                use_container_width=True,
+                key="revenue_trend"
+            )
+
+        with chart_col2:
+            st.plotly_chart(
+                create_attribution_pie_chart(attribution_agg),
+                use_container_width=True,
+                key="attribution_pie"
+            )
+
+        st.markdown("---")
+
+        # CHARTS ROW 2: Partner Performance (PRESERVED)
+        st.markdown("### Partner Performance")
+        chart_col3, chart_col4 = st.columns(2)
+
+        with chart_col3:
+            st.plotly_chart(
+                create_partner_performance_bar_chart(attribution_agg),
+                use_container_width=True,
+                key="partner_performance"
+            )
+
+        with chart_col4:
+            # Partner role distribution (need touchpoint data)
+            touchpoint_roles_df = pd.DataFrame([
+                {"partner_role": tp.role, "partner_id": tp.partner_id, "use_case_id": tp.target_id}
+                for tp in st.session_state.touchpoints
+            ])
+
+            st.plotly_chart(
+                create_partner_role_distribution(touchpoint_roles_df),
+                use_container_width=True,
+                key="role_distribution"
+            )
+
+        st.markdown("---")
+
+        # CHARTS ROW 3: Deal Analysis
+        st.markdown("### Deal Analysis")
+        chart_col5, chart_col6 = st.columns(2)
+
+        with chart_col5:
+            st.plotly_chart(
+                create_deal_value_distribution(revenue_df),
+                use_container_width=True,
+                key="deal_value_dist"
+            )
+
+        with chart_col6:
+            # Attribution Waterfall
+            st.plotly_chart(
+                create_attribution_waterfall(attribution_agg, total_revenue),
+                use_container_width=True,
+                key="waterfall"
+            )
+
+        st.markdown("---")
+
+        # EXPORT SECTION (PRESERVED)
+        st.markdown("### Export Dashboard Data")
+        export_cols = st.columns(4)
+
+        with export_cols[0]:
+            if not revenue_df.empty:
+                csv_data = export_to_csv(revenue_df, "revenue_data.csv")
+                st.download_button(
+                    "Download Revenue CSV",
+                    data=csv_data,
+                    file_name=f"revenue_{start_date}_to_{end_date}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+
+        with export_cols[1]:
+            if not attribution_agg.empty:
+                excel_data = export_to_excel({
+                    "Revenue": revenue_df,
+                    "Attribution": attribution_agg
+                })
+                st.download_button(
+                    "Download Excel",
+                    data=excel_data,
+                    file_name=f"dashboard_{start_date}_to_{end_date}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+
+        with export_cols[2]:
+            if not attribution_agg.empty:
+                # Generate executive PDF report
+                with st.spinner("📄 Generating executive PDF report..."):
+                    ledger_df = get_ledger_as_dataframe(st.session_state.ledger, st.session_state.partners)
+
+                    executive_pdf = generate_executive_report(
+                        report_date_range=f"{start_date} to {end_date}",
+                        total_revenue=total_revenue,
+                        total_attributed=total_attributed,
+                        attribution_coverage=attribution_coverage,
+                        unique_partners=unique_partners,
+                        top_partners=attribution_agg,
+                        ledger_df=ledger_df
+                    )
+                st.download_button(
+                    "📊 Executive Report (PDF)",
+                    data=executive_pdf,
+                    file_name=f"attribution_executive_report_{datetime.now().strftime('%Y%m%d')}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                    help="Beautiful executive report with charts and insights"
+                )
+
+        # Top Partners Table (PRESERVED)
+        st.markdown("---")
+        st.markdown("### Top 10 Partners by Attributed Revenue")
+        if not attribution_agg.empty:
+            top_10 = attribution_agg.nlargest(10, "attributed_amount")
+            st.dataframe(
+                top_10[["partner_name", "attributed_amount", "avg_split_percent", "accounts_influenced"]],
+                use_container_width=True
+            )
+
+        # PARTNER-SPECIFIC REPORTS
+        st.markdown("---")
+        st.markdown("### 📄 Partner-Specific Reports")
+        st.caption("Generate individual attribution statements for each partner")
+
+        if not attribution_agg.empty:
+            # INDIVIDUAL PARTNER REPORT
+            st.markdown("#### Single Partner Statement")
+            partner_report_col1, partner_report_col2 = st.columns([3, 1])
+
+            with partner_report_col1:
+                # Partner selector
+                partner_options = {
+                    f"{row.partner_name} ({row.partner_id})": row.partner_id
+                    for _, row in attribution_agg.iterrows()
+                }
+                selected_partner_display = st.selectbox(
+                    "Select Partner",
+                    options=list(partner_options.keys()),
+                    help="Choose a partner to generate their attribution statement"
+                )
+                selected_partner_id = partner_options[selected_partner_display]
+
+            with partner_report_col2:
+                # Generate button
+                partner_name = selected_partner_display.split(" (")[0]
+                partner_pdf = generate_partner_statement_pdf(
+                    partner_id=selected_partner_id,
+                    partner_name=partner_name,
+                    ledger_entries=st.session_state.ledger,
+                    targets=st.session_state.targets,
+                    report_period=f"{start_date} to {end_date}"
+                )
+
+                st.download_button(
+                    "📥 Download Statement",
+                    data=partner_pdf,
+                    file_name=f"partner_statement_{selected_partner_id}_{datetime.now().strftime('%Y%m%d')}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                    help="PDF statement showing this partner's attribution details"
+                )
+
+            # BULK EXPORT
+            st.markdown("#### Bulk Export (All Partners)")
+            bulk_col1, bulk_col2 = st.columns([3, 1])
+
+            with bulk_col1:
+                num_partners_with_attr = len(attribution_agg)
+                st.info(f"💼 Generate statements for all {num_partners_with_attr} partners with attribution. Perfect for monthly payout processes!")
+
+            with bulk_col2:
+                with st.spinner("📦 Generating bulk statements..."):
+                    bulk_zip = generate_bulk_partner_statements(
+                        ledger_entries=st.session_state.ledger,
+                        targets=st.session_state.targets,
+                        partners=st.session_state.partners,
+                        report_period=f"{start_date} to {end_date}"
+                    )
+
+                st.download_button(
+                    "📦 Download All (ZIP)",
+                    data=bulk_zip,
+                    file_name=f"partner_statements_bulk_{datetime.now().strftime('%Y%m%d')}.zip",
+                    mime="application/zip",
+                    use_container_width=True,
+                    help=f"ZIP file containing {num_partners_with_attr} individual partner PDFs"
+                )
+        else:
+            st.info("No partner attribution data available. Load data and run attribution calculations to generate partner reports.")
+    else:
         st.info("### 👋 Welcome to Attribution MVP!")
         st.markdown("""
         You haven't loaded any data yet. To get started:
@@ -381,284 +658,6 @@ with tabs[0]:
         - 🏆 Top contributing partners
         - 📋 Attribution ledger entries
         """)
-        st.stop()
-
-    # Filter by date range
-    if not revenue_df.empty:
-        revenue_df = revenue_df[
-            (pd.to_datetime(revenue_df["revenue_date"]) >= pd.to_datetime(start_date)) &
-            (pd.to_datetime(revenue_df["revenue_date"]) <= pd.to_datetime(end_date))
-        ]
-
-    if not attribution_df.empty:
-        attribution_df = attribution_df[
-            (pd.to_datetime(attribution_df["revenue_date"]) >= pd.to_datetime(start_date)) &
-            (pd.to_datetime(attribution_df["revenue_date"]) <= pd.to_datetime(end_date))
-        ]
-
-    # Aggregate attribution by partner (for charts)
-    if not attribution_df.empty:
-        attribution_agg = attribution_df.groupby(["partner_id", "partner_name"]).agg({
-            "attributed_amount": "sum",
-            "split_percent": "mean",
-            "account_id": "nunique"
-        }).reset_index()
-        attribution_agg.columns = ["partner_id", "partner_name", "attributed_amount", "avg_split_percent", "accounts_influenced"]
-    else:
-        attribution_agg = pd.DataFrame(columns=["partner_id", "partner_name", "attributed_amount", "avg_split_percent", "accounts_influenced"])
-
-    # KEY METRICS ROW (PRESERVED)
-    st.markdown("### Key Metrics")
-    metric_cols = st.columns(5)
-
-    total_revenue = float(revenue_df["amount"].sum()) if not revenue_df.empty else 0.0
-    total_attributed = float(attribution_agg["attributed_amount"].sum()) if not attribution_agg.empty else 0.0
-    attribution_coverage = (total_attributed / total_revenue * 100) if total_revenue > 0 else 0.0
-
-    with metric_cols[0]:
-        st.metric(
-            "Total Revenue",
-            f"${total_revenue:,.0f}",
-            delta=f"{dashboard_days}d period",
-            help="Sum of all closed opportunity/deal values in the selected time period"
-        )
-
-    with metric_cols[1]:
-        st.metric(
-            "Attributed Revenue",
-            f"${total_attributed:,.0f}",
-            delta=f"{attribution_coverage:.1f}% coverage",
-            help="Total revenue attributed to partners based on active attribution rules. Coverage shows % of revenue with partner attribution."
-        )
-
-    with metric_cols[2]:
-        unique_accounts = revenue_df["account_id"].nunique() if not revenue_df.empty else 0
-        st.metric(
-            "Active Accounts",
-            f"{unique_accounts}",
-            delta=f"{len(st.session_state.targets)} targets",
-            help="Number of unique customer accounts with closed deals in this period"
-        )
-
-    with metric_cols[3]:
-        unique_partners = attribution_agg["partner_id"].nunique() if not attribution_agg.empty else 0
-        st.metric(
-            "Partner Count",
-            f"{len(st.session_state.partners)}",
-            delta=f"{unique_partners} active",
-            help="Total partners in system. 'Active' shows partners with attributed revenue in this period."
-        )
-
-    with metric_cols[4]:
-        st.metric(
-            "Touchpoints",
-            f"{len(st.session_state.touchpoints)}",
-            delta=f"{len(st.session_state.ledger)} ledger entries",
-            help="Total partner interactions/engagements logged. Ledger entries show calculated attribution splits."
-        )
-
-    st.markdown("---")
-
-    # CHARTS ROW 1: Revenue and Attribution (PRESERVED)
-    st.markdown("### Revenue & Attribution Trends")
-    chart_col1, chart_col2 = st.columns(2)
-
-    with chart_col1:
-        st.plotly_chart(
-            create_revenue_over_time_chart(revenue_df),
-            use_container_width=True,
-            key="revenue_trend"
-        )
-
-    with chart_col2:
-        st.plotly_chart(
-            create_attribution_pie_chart(attribution_agg),
-            use_container_width=True,
-            key="attribution_pie"
-        )
-
-    st.markdown("---")
-
-    # CHARTS ROW 2: Partner Performance (PRESERVED)
-    st.markdown("### Partner Performance")
-    chart_col3, chart_col4 = st.columns(2)
-
-    with chart_col3:
-        st.plotly_chart(
-            create_partner_performance_bar_chart(attribution_agg),
-            use_container_width=True,
-            key="partner_performance"
-        )
-
-    with chart_col4:
-        # Partner role distribution (need touchpoint data)
-        touchpoint_roles_df = pd.DataFrame([
-            {"partner_role": tp.role, "partner_id": tp.partner_id, "use_case_id": tp.target_id}
-            for tp in st.session_state.touchpoints
-        ])
-
-        st.plotly_chart(
-            create_partner_role_distribution(touchpoint_roles_df),
-            use_container_width=True,
-            key="role_distribution"
-        )
-
-    st.markdown("---")
-
-    # CHARTS ROW 3: Deal Analysis
-    st.markdown("### Deal Analysis")
-    chart_col5, chart_col6 = st.columns(2)
-
-    with chart_col5:
-        st.plotly_chart(
-            create_deal_value_distribution(revenue_df),
-            use_container_width=True,
-            key="deal_value_dist"
-        )
-
-    with chart_col6:
-        # Attribution Waterfall
-        st.plotly_chart(
-            create_attribution_waterfall(attribution_agg, total_revenue),
-            use_container_width=True,
-            key="waterfall"
-        )
-
-    st.markdown("---")
-
-    # EXPORT SECTION (PRESERVED)
-    st.markdown("### Export Dashboard Data")
-    export_cols = st.columns(4)
-
-    with export_cols[0]:
-        if not revenue_df.empty:
-            csv_data = export_to_csv(revenue_df, "revenue_data.csv")
-            st.download_button(
-                "Download Revenue CSV",
-                data=csv_data,
-                file_name=f"revenue_{start_date}_to_{end_date}.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
-
-    with export_cols[1]:
-        if not attribution_agg.empty:
-            excel_data = export_to_excel({
-                "Revenue": revenue_df,
-                "Attribution": attribution_agg
-            })
-            st.download_button(
-                "Download Excel",
-                data=excel_data,
-                file_name=f"dashboard_{start_date}_to_{end_date}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
-
-    with export_cols[2]:
-        if not attribution_agg.empty:
-            # Generate executive PDF report
-            with st.spinner("📄 Generating executive PDF report..."):
-                ledger_df = get_ledger_as_dataframe(st.session_state.ledger, st.session_state.partners)
-
-                executive_pdf = generate_executive_report(
-                    report_date_range=f"{start_date} to {end_date}",
-                    total_revenue=total_revenue,
-                    total_attributed=total_attributed,
-                    attribution_coverage=attribution_coverage,
-                    unique_partners=unique_partners,
-                    top_partners=attribution_agg,
-                    ledger_df=ledger_df
-                )
-            st.download_button(
-                "📊 Executive Report (PDF)",
-                data=executive_pdf,
-                file_name=f"attribution_executive_report_{datetime.now().strftime('%Y%m%d')}.pdf",
-                mime="application/pdf",
-                use_container_width=True,
-                help="Beautiful executive report with charts and insights"
-            )
-
-    # Top Partners Table (PRESERVED)
-    st.markdown("---")
-    st.markdown("### Top 10 Partners by Attributed Revenue")
-    if not attribution_agg.empty:
-        top_10 = attribution_agg.nlargest(10, "attributed_amount")
-        st.dataframe(
-            top_10[["partner_name", "attributed_amount", "avg_split_percent", "accounts_influenced"]],
-            use_container_width=True
-        )
-
-    # PARTNER-SPECIFIC REPORTS
-    st.markdown("---")
-    st.markdown("### 📄 Partner-Specific Reports")
-    st.caption("Generate individual attribution statements for each partner")
-
-    if not attribution_agg.empty:
-        # INDIVIDUAL PARTNER REPORT
-        st.markdown("#### Single Partner Statement")
-        partner_report_col1, partner_report_col2 = st.columns([3, 1])
-
-        with partner_report_col1:
-            # Partner selector
-            partner_options = {
-                f"{row.partner_name} ({row.partner_id})": row.partner_id
-                for _, row in attribution_agg.iterrows()
-            }
-            selected_partner_display = st.selectbox(
-                "Select Partner",
-                options=list(partner_options.keys()),
-                help="Choose a partner to generate their attribution statement"
-            )
-            selected_partner_id = partner_options[selected_partner_display]
-
-        with partner_report_col2:
-            # Generate button
-            partner_name = selected_partner_display.split(" (")[0]
-            partner_pdf = generate_partner_statement_pdf(
-                partner_id=selected_partner_id,
-                partner_name=partner_name,
-                ledger_entries=st.session_state.ledger,
-                targets=st.session_state.targets,
-                report_period=f"{start_date} to {end_date}"
-            )
-
-            st.download_button(
-                "📥 Download Statement",
-                data=partner_pdf,
-                file_name=f"partner_statement_{selected_partner_id}_{datetime.now().strftime('%Y%m%d')}.pdf",
-                mime="application/pdf",
-                use_container_width=True,
-                help="PDF statement showing this partner's attribution details"
-            )
-
-        # BULK EXPORT
-        st.markdown("#### Bulk Export (All Partners)")
-        bulk_col1, bulk_col2 = st.columns([3, 1])
-
-        with bulk_col1:
-            num_partners_with_attr = len(attribution_agg)
-            st.info(f"💼 Generate statements for all {num_partners_with_attr} partners with attribution. Perfect for monthly payout processes!")
-
-        with bulk_col2:
-            with st.spinner("📦 Generating bulk statements..."):
-                bulk_zip = generate_bulk_partner_statements(
-                    ledger_entries=st.session_state.ledger,
-                    targets=st.session_state.targets,
-                    partners=st.session_state.partners,
-                    report_period=f"{start_date} to {end_date}"
-                )
-
-            st.download_button(
-                "📦 Download All (ZIP)",
-                data=bulk_zip,
-                file_name=f"partner_statements_bulk_{datetime.now().strftime('%Y%m%d')}.zip",
-                mime="application/zip",
-                use_container_width=True,
-                help=f"ZIP file containing {num_partners_with_attr} individual partner PDFs"
-            )
-    else:
-        st.info("No partner attribution data available. Load data and run attribution calculations to generate partner reports.")
 
 
 # ============================================================================
