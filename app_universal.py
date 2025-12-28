@@ -19,6 +19,7 @@ Key Features:
 import streamlit as st
 import pandas as pd
 import json
+import calendar
 from datetime import datetime, date, timedelta
 from typing import Dict, List, Any, Optional
 
@@ -32,17 +33,19 @@ from attribution_engine import AttributionEngine, select_rule_for_target
 from data_ingestion import ingest_csv, generate_csv_template, SchemaDetector
 from nl_rule_parser import parse_nl_to_rule, get_example_prompts
 from templates import list_templates, get_template, recommend_template
+from demo_data import generate_complete_demo_data, get_demo_data_summary, DEMO_PARTNER_NAMES
 
 # Preserve original dashboard visualizations
 from dashboards import (
     create_revenue_over_time_chart,
     create_partner_performance_bar_chart,
     create_attribution_pie_chart,
-    create_pipeline_funnel_chart,
+    create_deal_value_distribution,
     create_partner_role_distribution,
     create_attribution_waterfall
 )
-from exports import export_to_csv, export_to_excel, generate_pdf_report
+from exports import export_to_csv, export_to_excel, generate_pdf_report, generate_partner_statement_pdf, generate_bulk_partner_statements
+from pdf_executive_report import generate_executive_report
 
 # ============================================================================
 # Page Configuration
@@ -261,26 +264,123 @@ with tabs[0]:
     st.title("Attribution Dashboard")
     st.caption("Executive overview of partner attribution performance and metrics")
 
-    # Date range selector (preserved from original)
-    col1, col2, col3 = st.columns([2, 2, 1])
-    with col1:
-        dashboard_days = st.selectbox(
-            "Time Period",
-            [7, 30, 60, 90, 180],
-            index=1,
-            format_func=lambda x: f"Last {x} days"
-        )
-    with col2:
-        if st.button("Refresh Dashboard", type="primary"):
-            st.rerun()
+    # Enhanced Date Range Selector
+    col1, col2, col3 = st.columns([2, 2, 2])
 
-    # Calculate date range
-    end_date = date.today()
-    start_date = end_date - timedelta(days=dashboard_days)
+    with col1:
+        period_type = st.selectbox(
+            "Period Type",
+            ["Quick Range", "Month", "Quarter", "Year", "Custom"],
+            help="Select how you want to define the reporting period"
+        )
+
+    with col2:
+        if period_type == "Quick Range":
+            days = st.selectbox(
+                "Time Range",
+                [7, 30, 60, 90, 180],
+                index=1,
+                format_func=lambda x: f"Last {x} days"
+            )
+            end_date = date.today()
+            start_date = end_date - timedelta(days=days)
+
+        elif period_type == "Month":
+            # Generate last 12 months
+            months = []
+            today = date.today()
+            for i in range(12):
+                month_date = today.replace(day=1) - timedelta(days=i*30)
+                months.append((month_date.strftime("%B %Y"), month_date.year, month_date.month))
+
+            selected_month = st.selectbox(
+                "Select Month",
+                [m[0] for m in months],
+                help="Choose a specific month for reporting"
+            )
+
+            # Find selected month details
+            year, month = next((m[1], m[2]) for m in months if m[0] == selected_month)
+            start_date = date(year, month, 1)
+            last_day = calendar.monthrange(year, month)[1]
+            end_date = date(year, month, last_day)
+
+        elif period_type == "Quarter":
+            # Generate last 4 quarters
+            quarters = []
+            today = date.today()
+            current_quarter = (today.month - 1) // 3 + 1
+            current_year = today.year
+
+            for i in range(4):
+                q = current_quarter - i
+                y = current_year
+                while q <= 0:
+                    q += 4
+                    y -= 1
+                quarters.append((f"Q{q} {y}", y, q))
+
+            selected_quarter = st.selectbox(
+                "Select Quarter",
+                [q[0] for q in quarters],
+                help="Choose a specific quarter for reporting"
+            )
+
+            # Calculate quarter dates
+            year, quarter = next((q[1], q[2]) for q in quarters if q[0] == selected_quarter)
+            start_month = (quarter - 1) * 3 + 1
+            start_date = date(year, start_month, 1)
+            end_month = start_month + 2
+            last_day = calendar.monthrange(year, end_month)[1]
+            end_date = date(year, end_month, last_day)
+
+        elif period_type == "Year":
+            current_year = date.today().year
+            years = [current_year - i for i in range(3)]
+            selected_year = st.selectbox("Select Year", years)
+            start_date = date(selected_year, 1, 1)
+            end_date = date(selected_year, 12, 31)
+
+        else:  # Custom
+            start_date = st.date_input("Start Date", value=date.today() - timedelta(days=30))
+            end_date = st.date_input("End Date", value=date.today())
+
+    with col3:
+        st.metric(
+            "Report Period",
+            f"{(end_date - start_date).days} days",
+            help="Length of the selected reporting period"
+        )
 
     # Get data using new architecture
-    revenue_df = get_revenue_as_dataframe()
-    attribution_df = get_ledger_as_dataframe()
+    with st.spinner("📊 Loading dashboard data..."):
+        revenue_df = get_revenue_as_dataframe()
+        attribution_df = get_ledger_as_dataframe()
+
+    # EMPTY STATE: Show welcome card if no data loaded
+    if len(st.session_state.targets) == 0:
+        st.info("### 👋 Welcome to Attribution MVP!")
+        st.markdown("""
+        You haven't loaded any data yet. To get started:
+
+        **Option 1: Try Demo Data (Recommended)**
+        1. Click the **"📥 Data Import"** tab above
+        2. Click **"🚀 Load Demo Data"** button
+        3. Return to this Dashboard to see attribution metrics
+
+        **Option 2: Upload Your Own Data**
+        1. Go to **"📥 Data Import"** tab
+        2. Upload your target data (opportunities/deals)
+        3. Upload partner touchpoint data
+        4. Create attribution rules in **"⚙️ Rule Builder"** tab
+
+        **What you'll see here:**
+        - 📊 Revenue and attribution metrics
+        - 📈 Partner performance charts
+        - 🏆 Top contributing partners
+        - 📋 Attribution ledger entries
+        """)
+        st.stop()
 
     # Filter by date range
     if not revenue_df.empty:
@@ -318,14 +418,16 @@ with tabs[0]:
         st.metric(
             "Total Revenue",
             f"${total_revenue:,.0f}",
-            delta=f"{dashboard_days}d period"
+            delta=f"{dashboard_days}d period",
+            help="Sum of all closed opportunity/deal values in the selected time period"
         )
 
     with metric_cols[1]:
         st.metric(
             "Attributed Revenue",
             f"${total_attributed:,.0f}",
-            delta=f"{attribution_coverage:.1f}% coverage"
+            delta=f"{attribution_coverage:.1f}% coverage",
+            help="Total revenue attributed to partners based on active attribution rules. Coverage shows % of revenue with partner attribution."
         )
 
     with metric_cols[2]:
@@ -333,7 +435,8 @@ with tabs[0]:
         st.metric(
             "Active Accounts",
             f"{unique_accounts}",
-            delta=f"{len(st.session_state.targets)} targets"
+            delta=f"{len(st.session_state.targets)} targets",
+            help="Number of unique customer accounts with closed deals in this period"
         )
 
     with metric_cols[3]:
@@ -341,14 +444,16 @@ with tabs[0]:
         st.metric(
             "Partner Count",
             f"{len(st.session_state.partners)}",
-            delta=f"{unique_partners} active"
+            delta=f"{unique_partners} active",
+            help="Total partners in system. 'Active' shows partners with attributed revenue in this period."
         )
 
     with metric_cols[4]:
         st.metric(
             "Touchpoints",
             f"{len(st.session_state.touchpoints)}",
-            delta=f"{len(st.session_state.ledger)} ledger entries"
+            delta=f"{len(st.session_state.ledger)} ledger entries",
+            help="Total partner interactions/engagements logged. Ledger entries show calculated attribution splits."
         )
 
     st.markdown("---")
@@ -399,13 +504,24 @@ with tabs[0]:
 
     st.markdown("---")
 
-    # Attribution Waterfall (PRESERVED)
-    st.markdown("### Attribution Breakdown")
-    st.plotly_chart(
-        create_attribution_waterfall(attribution_agg, total_revenue),
-        use_container_width=True,
-        key="waterfall"
-    )
+    # CHARTS ROW 3: Deal Analysis
+    st.markdown("### Deal Analysis")
+    chart_col5, chart_col6 = st.columns(2)
+
+    with chart_col5:
+        st.plotly_chart(
+            create_deal_value_distribution(revenue_df),
+            use_container_width=True,
+            key="deal_value_dist"
+        )
+
+    with chart_col6:
+        # Attribution Waterfall
+        st.plotly_chart(
+            create_attribution_waterfall(attribution_agg, total_revenue),
+            use_container_width=True,
+            key="waterfall"
+        )
 
     st.markdown("---")
 
@@ -440,25 +556,26 @@ with tabs[0]:
 
     with export_cols[2]:
         if not attribution_agg.empty:
-            pdf_data = generate_pdf_report(
-                title="Partner Performance Report",
-                summary_data={
-                    "Report Period": f"{start_date} to {end_date}",
-                    "Total Revenue": total_revenue,
-                    "Attributed Revenue": total_attributed,
-                    "Attribution Coverage": f"{attribution_coverage:.1f}%",
-                    "Active Partners": unique_partners
-                },
-                tables={
-                    "Partner Performance": attribution_agg[["partner_name", "attributed_amount", "accounts_influenced"]].head(10)
-                }
-            )
+            # Generate executive PDF report
+            with st.spinner("📄 Generating executive PDF report..."):
+                ledger_df = get_ledger_as_dataframe(st.session_state.ledger, st.session_state.partners)
+
+                executive_pdf = generate_executive_report(
+                    report_date_range=f"{start_date} to {end_date}",
+                    total_revenue=total_revenue,
+                    total_attributed=total_attributed,
+                    attribution_coverage=attribution_coverage,
+                    unique_partners=unique_partners,
+                    top_partners=attribution_agg,
+                    ledger_df=ledger_df
+                )
             st.download_button(
-                "Download PDF Report",
-                data=pdf_data,
-                file_name=f"attribution_report_{end_date}.pdf",
+                "📊 Executive Report (PDF)",
+                data=executive_pdf,
+                file_name=f"attribution_executive_report_{datetime.now().strftime('%Y%m%d')}.pdf",
                 mime="application/pdf",
-                use_container_width=True
+                use_container_width=True,
+                help="Beautiful executive report with charts and insights"
             )
 
     # Top Partners Table (PRESERVED)
@@ -471,6 +588,77 @@ with tabs[0]:
             use_container_width=True
         )
 
+    # PARTNER-SPECIFIC REPORTS
+    st.markdown("---")
+    st.markdown("### 📄 Partner-Specific Reports")
+    st.caption("Generate individual attribution statements for each partner")
+
+    if not attribution_agg.empty:
+        # INDIVIDUAL PARTNER REPORT
+        st.markdown("#### Single Partner Statement")
+        partner_report_col1, partner_report_col2 = st.columns([3, 1])
+
+        with partner_report_col1:
+            # Partner selector
+            partner_options = {
+                f"{row.partner_name} ({row.partner_id})": row.partner_id
+                for _, row in attribution_agg.iterrows()
+            }
+            selected_partner_display = st.selectbox(
+                "Select Partner",
+                options=list(partner_options.keys()),
+                help="Choose a partner to generate their attribution statement"
+            )
+            selected_partner_id = partner_options[selected_partner_display]
+
+        with partner_report_col2:
+            # Generate button
+            partner_name = selected_partner_display.split(" (")[0]
+            partner_pdf = generate_partner_statement_pdf(
+                partner_id=selected_partner_id,
+                partner_name=partner_name,
+                ledger_entries=st.session_state.ledger,
+                targets=st.session_state.targets,
+                report_period=f"{start_date} to {end_date}"
+            )
+
+            st.download_button(
+                "📥 Download Statement",
+                data=partner_pdf,
+                file_name=f"partner_statement_{selected_partner_id}_{datetime.now().strftime('%Y%m%d')}.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+                help="PDF statement showing this partner's attribution details"
+            )
+
+        # BULK EXPORT
+        st.markdown("#### Bulk Export (All Partners)")
+        bulk_col1, bulk_col2 = st.columns([3, 1])
+
+        with bulk_col1:
+            num_partners_with_attr = len(attribution_agg)
+            st.info(f"💼 Generate statements for all {num_partners_with_attr} partners with attribution. Perfect for monthly payout processes!")
+
+        with bulk_col2:
+            with st.spinner("📦 Generating bulk statements..."):
+                bulk_zip = generate_bulk_partner_statements(
+                    ledger_entries=st.session_state.ledger,
+                    targets=st.session_state.targets,
+                    partners=st.session_state.partners,
+                    report_period=f"{start_date} to {end_date}"
+                )
+
+            st.download_button(
+                "📦 Download All (ZIP)",
+                data=bulk_zip,
+                file_name=f"partner_statements_bulk_{datetime.now().strftime('%Y%m%d')}.zip",
+                mime="application/zip",
+                use_container_width=True,
+                help=f"ZIP file containing {num_partners_with_attr} individual partner PDFs"
+            )
+    else:
+        st.info("No partner attribution data available. Load data and run attribution calculations to generate partner reports.")
+
 
 # ============================================================================
 # TAB 1: DATA IMPORT (NEW)
@@ -479,6 +667,64 @@ with tabs[0]:
 with tabs[1]:
     st.title("📥 Data Import")
     st.caption("Upload CSV data with automatic schema detection")
+
+    # ========================================
+    # DEMO DATA PLAYGROUND
+    # ========================================
+    st.markdown("### 🎲 Quick Start - Load Demo Data")
+
+    demo_col1, demo_col2 = st.columns([2, 1])
+
+    with demo_col1:
+        st.info("""
+**Never demo an empty app!** Load realistic SaaS B2B sample data:
+- 10 opportunities ($10K-$2M range)
+- 25 partner touchpoints (7 partners across SI, Influence, Referral, ISV roles)
+- 3 pre-configured attribution rules
+- Pre-calculated ledger entries
+
+Perfect for exploring features and presenting to stakeholders.
+        """)
+
+    with demo_col2:
+        if st.button("🚀 Load Demo Data", type="primary", use_container_width=True):
+            with st.spinner("Generating demo dataset..."):
+                # Generate demo data
+                demo_targets, demo_touchpoints, demo_rules, demo_ledger = generate_complete_demo_data()
+
+                # Clear existing data
+                st.session_state.targets = demo_targets
+                st.session_state.touchpoints = demo_touchpoints
+                st.session_state.rules = demo_rules
+                st.session_state.ledger = demo_ledger
+
+                # Update partners dictionary
+                st.session_state.partners = DEMO_PARTNER_NAMES.copy()
+
+                # Get summary
+                summary = get_demo_data_summary(demo_targets, demo_touchpoints, demo_rules, demo_ledger)
+
+                st.success("✅ **Demo Data Loaded!**")
+                st.markdown(f"""
+**Dataset Summary:**
+- 📊 {summary['num_targets']} opportunities
+- 🤝 {summary['num_touchpoints']} partner touchpoints
+- ⚙️ {summary['num_rules']} attribution rules
+- 📝 {summary['num_ledger_entries']} ledger entries
+
+**💰 Revenue:** ${summary['total_revenue']:,.2f} total, ${summary['total_attributed']:,.2f} attributed ({summary['attribution_accuracy']:.1f}% coverage)
+
+**📅 Date Range:** {summary['date_range'][0]} to {summary['date_range'][1]}
+
+**🏆 Top 3 Partners:**
+                """)
+                for idx, (partner_name, revenue) in enumerate(summary['top_partners'][:3], 1):
+                    st.markdown(f"{idx}. **{partner_name}**: ${revenue:,.2f}")
+
+                st.info("👉 Go to the **Dashboard** tab to see visualizations or **Ledger Explorer** to see attribution results!")
+
+    st.markdown("---")
+    st.markdown("### 📂 Or Import Your Own Data")
 
     import_tabs = st.tabs(["Upload CSV", "Download Templates", "Manual Entry"])
 
@@ -509,7 +755,7 @@ with tabs[1]:
             st.dataframe(preview_df.head(), use_container_width=True)
 
             # Ingest
-            if st.button("Import Data", type="primary"):
+            if st.button("Import Data"):
                 with st.spinner("Ingesting data..."):
                     result = ingest_csv(csv_content)
 
@@ -608,7 +854,7 @@ with tabs[1]:
                 partner_name = st.text_input("Partner Name", value="New Partner")
                 partner_role = st.selectbox("Role", DEFAULT_PARTNER_ROLES)
 
-            if st.form_submit_button("Add Entry", type="primary"):
+            if st.form_submit_button("Add Entry"):
                 # Create target
                 new_target = AttributionTarget(
                     id=len(st.session_state.targets) + 1,
@@ -645,41 +891,101 @@ with tabs[1]:
 
 with tabs[2]:
     st.title("⚙️ Rule Builder")
-    st.caption("Create attribution rules using templates or natural language")
+    st.caption("Create attribution rules using natural language, templates, or manual configuration")
 
-    builder_tabs = st.tabs(["Natural Language", "Template Selection", "Manual Config"])
+    # ========================================
+    # NATURAL LANGUAGE RULE CREATOR (HERO)
+    # ========================================
+    st.markdown("### ✨ Describe Your Attribution Model in Plain English")
+    st.markdown('<p style="font-size: 0.9em; color: #6b7280; margin-top: -10px;">Powered by <b>Claude AI</b> — converts natural language to attribution rules instantly</p>', unsafe_allow_html=True)
 
-    # Natural Language sub-tab
-    with builder_tabs[0]:
-        st.markdown("### Create Rule from Natural Language")
+    # Example prompts (clickable chips)
+    st.markdown("**Try these examples:**")
+    examples = get_example_prompts()
 
-        # Show examples
-        with st.expander("💡 Example Prompts"):
-            examples = get_example_prompts()
-            for ex in examples[:5]:
-                st.code(ex["prompt"], language="text")
+    # Create clickable example chips using columns
+    example_cols = st.columns(2)
 
-        nl_input = st.text_area(
-            "Describe your attribution rule in plain English:",
-            placeholder="e.g., 'SI partners get 60%, Influence 30%, Referral 10%'",
-            height=100
-        )
+    if "nl_input_text" not in st.session_state:
+        st.session_state.nl_input_text = ""
 
-        if st.button("Parse Rule", type="primary"):
-            if nl_input:
-                success, rule_config, error = parse_nl_to_rule(nl_input)
+    with example_cols[0]:
+        if st.button("📊 " + examples[0]["prompt"][:50] + "...", use_container_width=True):
+            st.session_state.nl_input_text = examples[0]["prompt"]
+            st.rerun()
+        if st.button("📊 " + examples[1]["prompt"][:50] + "...", use_container_width=True):
+            st.session_state.nl_input_text = examples[1]["prompt"]
+            st.rerun()
+        if st.button("📊 " + examples[2]["prompt"][:50] + "...", use_container_width=True):
+            st.session_state.nl_input_text = examples[2]["prompt"]
+            st.rerun()
 
-                if success:
-                    st.success("✅ Parsed successfully!")
+    with example_cols[1]:
+        if st.button("📊 " + examples[3]["prompt"][:50] + "...", use_container_width=True):
+            st.session_state.nl_input_text = examples[3]["prompt"]
+            st.rerun()
+        if st.button("📊 " + examples[4]["prompt"][:50] + "...", use_container_width=True):
+            st.session_state.nl_input_text = examples[4]["prompt"]
+            st.rerun()
+        if st.button("💡 See all 8 examples", use_container_width=True):
+            with st.expander("📚 All Example Prompts", expanded=True):
+                for ex in examples:
+                    st.markdown(f"**{ex['description']}**")
+                    st.code(ex["prompt"], language="text")
+                    st.markdown("---")
+
+    # Main NL input (large and prominent)
+    nl_input = st.text_area(
+        "Your attribution rule:",
+        value=st.session_state.nl_input_text,
+        placeholder="e.g., 'SI partners get 60%, Influence 30%, Referral 10%' or 'Give more credit to recent partner touches'",
+        height=120,
+        help="Describe how you want to split attribution among partners. Use plain English!"
+    )
+
+    # Parse button (prominent)
+    parse_col1, parse_col2, parse_col3 = st.columns([2, 1, 2])
+
+    with parse_col2:
+        parse_clicked = st.button("🚀 Generate Rule", type="primary", use_container_width=True)
+
+    if parse_clicked and nl_input:
+        with st.spinner("🤖 AI is parsing your rule..."):
+            success, rule_config, error = parse_nl_to_rule(nl_input)
+
+            if success:
+                st.success("✅ **Rule generated successfully!**")
+
+                # Beautiful preview card
+                st.markdown("---")
+                st.markdown("### 📋 Generated Rule Configuration")
+
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    st.markdown(f"**Rule Name:**")
+                    st.info(rule_config['name'])
+
+                    st.markdown(f"**Attribution Model:**")
+                    st.info(rule_config['model_type'].replace('_', ' ').title())
+
+                    st.markdown(f"**Split Constraint:**")
+                    st.info(rule_config['split_constraint'].replace('_', ' ').title())
+
+                with col2:
+                    st.markdown(f"**Model Configuration:**")
+                    st.json(rule_config['config'])
+
+                # Show full JSON config in expander
+                with st.expander("🔍 View Full JSON Configuration"):
                     st.json(rule_config)
 
-                    # Preview
-                    st.markdown("#### Preview")
-                    st.markdown(f"**Name:** {rule_config['name']}")
-                    st.markdown(f"**Model:** {rule_config['model_type']}")
-                    st.markdown(f"**Config:** `{rule_config['config']}`")
+                # Action buttons
+                st.markdown("---")
+                action_col1, action_col2, action_col3 = st.columns([1, 1, 2])
 
-                    if st.button("Save Rule"):
+                with action_col1:
+                    if st.button("💾 Save This Rule", type="primary", use_container_width=True):
                         new_rule = AttributionRule(
                             id=len(st.session_state.rules) + 1,
                             name=rule_config["name"],
@@ -691,13 +997,46 @@ with tabs[2]:
                             active=True
                         )
                         st.session_state.rules.append(new_rule)
-                        st.success("Rule saved!")
+
+                        # AUTO-RECALCULATE: Trigger attribution calculation with new rule
+                        with st.spinner("💡 Recalculating attribution with new rule..."):
+                            count = calculate_attribution_for_all_targets()
+
+                        st.success(f"✅ Rule saved! Created {count} new ledger entries")
+                        st.balloons()
                         st.rerun()
-                else:
-                    st.error(f"❌ {error}")
+
+                with action_col2:
+                    if st.button("✏️ Edit Manually", use_container_width=True):
+                        st.info("👉 Use the 'Manual Config' tab below to modify the JSON configuration")
+
+            else:
+                st.error(f"❌ **Could not parse your rule**")
+                st.markdown(f"**Error:** {error}")
+
+                # Helpful suggestions
+                st.markdown("**💡 Suggestions:**")
+                st.markdown("""
+- Try being more specific: "SI partners get 50%, Influence 30%, Referral 20%"
+- Use keywords: "equal split", "first touch", "time decay", "activity based"
+- Check the examples above for guidance
+- Or use the Template Selection tab for pre-built rules
+                """)
+
+    elif parse_clicked and not nl_input:
+        st.warning("⚠️ Please describe your attribution rule first!")
+
+    st.markdown("---")
+
+    # ========================================
+    # ALTERNATIVE: TEMPLATES & MANUAL CONFIG
+    # ========================================
+    st.markdown("### 📚 Or Choose a Different Approach")
+
+    builder_tabs = st.tabs(["Template Selection", "Manual Config"])
 
     # Template Selection sub-tab
-    with builder_tabs[1]:
+    with builder_tabs[0]:
         st.markdown("### Choose from Prebuilt Templates")
 
         category = st.selectbox(
@@ -738,6 +1077,51 @@ with tabs[2]:
                     st.session_state.rules.append(new_rule)
                     st.success(f"✅ Applied template: {template_detail['name']}")
                     st.rerun()
+
+    # Manual Config sub-tab
+    with builder_tabs[1]:
+        st.markdown("### Manual Rule Configuration")
+        st.caption("For advanced users who want full control over rule JSON")
+
+        with st.form("manual_rule_form"):
+            rule_name = st.text_input("Rule Name", value="Custom Rule")
+
+            model_type = st.selectbox(
+                "Attribution Model",
+                options=[m.value for m in AttributionModel],
+                format_func=lambda x: x.replace('_', ' ').title()
+            )
+
+            st.markdown("**Model Configuration (JSON):**")
+            config_json = st.text_area(
+                "Config",
+                value='{"weights": {"Implementation (SI)": 0.5, "Influence": 0.3, "Referral": 0.2}}',
+                height=150,
+                help="Enter valid JSON configuration for the selected model"
+            )
+
+            priority = st.number_input("Priority", min_value=1, max_value=1000, value=100)
+
+            if st.form_submit_button("Create Rule"):
+                try:
+                    config = json.loads(config_json)
+                    new_rule = AttributionRule(
+                        id=len(st.session_state.rules) + 1,
+                        name=rule_name,
+                        model_type=AttributionModel(model_type),
+                        config=config,
+                        split_constraint=SplitConstraint.MUST_SUM_TO_100,
+                        applies_to={},
+                        priority=priority,
+                        active=True
+                    )
+                    st.session_state.rules.append(new_rule)
+                    st.success(f"✅ Created rule: {rule_name}")
+                    st.rerun()
+                except json.JSONDecodeError as e:
+                    st.error(f"❌ Invalid JSON: {str(e)}")
+                except Exception as e:
+                    st.error(f"❌ Error creating rule: {str(e)}")
 
 
 # ============================================================================

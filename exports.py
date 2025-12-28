@@ -348,3 +348,280 @@ def create_account_drilldown_report(
         summary_data=summary_data,
         tables=tables
     )
+
+
+def generate_partner_statement_pdf(
+    partner_id: str,
+    partner_name: str,
+    ledger_entries: List,
+    targets: List,
+    report_period: str = None
+) -> bytes:
+    """
+    Generate a partner-specific attribution statement PDF.
+
+    Shows all deals where this partner received attribution credit,
+    with detailed breakdown of their contribution and payout amounts.
+
+    Args:
+        partner_id: Partner identifier
+        partner_name: Display name for partner
+        ledger_entries: List of LedgerEntry objects for this partner
+        targets: List of all AttributionTarget objects
+        report_period: Optional period description (e.g., "January 2025")
+
+    Returns:
+        PDF content as bytes
+    """
+    from reportlab.pdfgen import canvas
+
+    # Filter ledger entries for this partner
+    partner_ledger = [entry for entry in ledger_entries if entry.partner_id == partner_id]
+
+    if not partner_ledger:
+        # Return empty statement if no attribution
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=letter)
+        elements = []
+        styles = getSampleStyleSheet()
+
+        elements.append(Paragraph(f"Partner Attribution Statement: {partner_name}", styles['Title']))
+        elements.append(Spacer(1, 0.3*inch))
+        elements.append(Paragraph("No attribution entries found for this partner in the selected period.", styles['Normal']))
+
+        doc.build(elements)
+        buffer.seek(0)
+        return buffer.read()
+
+    # Calculate summary metrics
+    total_attributed_value = sum(entry.attributed_value for entry in partner_ledger)
+    num_deals = len(partner_ledger)
+    avg_split = sum(entry.split_percentage for entry in partner_ledger) / len(partner_ledger) if partner_ledger else 0
+
+    # Create target lookup
+    target_lookup = {t.id: t for t in targets}
+
+    # Build PDF
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=letter,
+        leftMargin=0.75*inch,
+        rightMargin=0.75*inch,
+        topMargin=1*inch,
+        bottomMargin=0.75*inch
+    )
+
+    elements = []
+    styles = getSampleStyleSheet()
+
+    # Custom styles
+    title_style = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Heading1'],
+        fontSize=24,
+        textColor=colors.HexColor('#1e3a8a'),
+        spaceAfter=12,
+        alignment=TA_CENTER
+    )
+
+    heading_style = ParagraphStyle(
+        'CustomHeading',
+        parent=styles['Heading2'],
+        fontSize=16,
+        textColor=colors.HexColor('#1e40af'),
+        spaceAfter=12,
+        spaceBefore=20
+    )
+
+    # COVER PAGE
+    elements.append(Spacer(1, 1*inch))
+    elements.append(Paragraph(f"Partner Attribution Statement", title_style))
+    elements.append(Spacer(1, 0.2*inch))
+    elements.append(Paragraph(partner_name, styles['Heading2']))
+    elements.append(Spacer(1, 0.5*inch))
+
+    # Statement details
+    statement_info = [
+        ['Partner ID:', partner_id],
+        ['Statement Period:', report_period or datetime.now().strftime("%B %Y")],
+        ['Generated:', datetime.now().strftime("%B %d, %Y at %I:%M %p")],
+        ['Status:', 'Draft' if not report_period else 'Final']
+    ]
+
+    info_table = Table(statement_info, colWidths=[2*inch, 3.5*inch])
+    info_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#f3f4f6')),
+        ('TEXTCOLOR', (0, 0), (-1, -1), colors.HexColor('#374151')),
+        ('ALIGN', (0, 0), (0, -1), 'RIGHT'),
+        ('ALIGN', (1, 0), (1, -1), 'LEFT'),
+        ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 11),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#e5e7eb')),
+        ('TOPPADDING', (0, 0), (-1, -1), 8),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+        ('LEFTPADDING', (0, 0), (-1, -1), 12),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 12),
+    ]))
+
+    elements.append(info_table)
+    elements.append(PageBreak())
+
+    # SUMMARY
+    elements.append(Paragraph("Attribution Summary", heading_style))
+
+    summary_data = [
+        ['Metric', 'Value'],
+        ['Total Attributed Revenue', f'${total_attributed_value:,.2f}'],
+        ['Number of Deals Influenced', str(num_deals)],
+        ['Average Attribution Split', f'{avg_split:.1%}'],
+    ]
+
+    summary_table = Table(summary_data, colWidths=[3*inch, 2.5*inch])
+    summary_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1e40af')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('ALIGN', (0, 0), (-1, 0), 'LEFT'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 12),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+        ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+        ('TEXTCOLOR', (0, 1), (-1, -1), colors.HexColor('#1f2937')),
+        ('FONTNAME', (0, 1), (0, -1), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 1), (-1, -1), 11),
+        ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#e5e7eb')),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f9fafb')]),
+        ('TOPPADDING', (0, 1), (-1, -1), 10),
+        ('BOTTOMPADDING', (0, 1), (-1, -1), 10),
+    ]))
+
+    elements.append(summary_table)
+    elements.append(Spacer(1, 0.5*inch))
+
+    # DEAL BREAKDOWN
+    elements.append(Paragraph("Deal-by-Deal Breakdown", heading_style))
+
+    deal_data = [['Deal ID', 'Deal Value', 'Your Split %', 'Attributed $', 'Rule Applied']]
+
+    for entry in sorted(partner_ledger, key=lambda e: e.attributed_value, reverse=True):
+        target = target_lookup.get(entry.target_id)
+        target_id_str = target.external_id if target else f"Target #{entry.target_id}"
+        target_value = target.value if target else 0
+
+        deal_data.append([
+            str(target_id_str)[:20],
+            f'${target_value:,.0f}',
+            f'{entry.split_percentage:.1%}',
+            f'${entry.attributed_value:,.2f}',
+            f'Rule #{entry.rule_id}'
+        ])
+
+    deal_table = Table(deal_data, colWidths=[1.5*inch, 1.2*inch, 1*inch, 1.2*inch, 1*inch])
+    deal_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3b82f6')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ('ALIGN', (1, 0), (-1, -1), 'RIGHT'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 10),
+        ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+        ('FONTSIZE', (0, 1), (-1, -1), 9),
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#cbd5e1')),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#eff6ff')]),
+        ('TOPPADDING', (0, 0), (-1, -1), 8),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+    ]))
+
+    elements.append(deal_table)
+    elements.append(Spacer(1, 0.5*inch))
+
+    # FOOTER NOTE
+    elements.append(Paragraph(
+        "<i>This statement reflects attribution calculations as of the generation date. "
+        "For questions or disputes, please contact your Partner Operations team.</i>",
+        styles['Normal']
+    ))
+
+    # Build PDF
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer.read()
+
+
+def generate_bulk_partner_statements(
+    ledger_entries: List,
+    targets: List,
+    partners: Dict[str, str],
+    report_period: str = None
+) -> bytes:
+    """
+    Generate attribution statements for ALL partners and package into ZIP file.
+
+    This is used for monthly payout processes where you need to send statements
+    to all partners simultaneously.
+
+    Args:
+        ledger_entries: List of all LedgerEntry objects
+        targets: List of all AttributionTarget objects
+        partners: Dictionary mapping partner_id -> partner_name
+        report_period: Optional period description (e.g., "January 2025")
+
+    Returns:
+        ZIP file content as bytes containing individual PDF statements
+    """
+    import zipfile
+
+    # Group ledger entries by partner
+    partners_with_attribution = {}
+    for entry in ledger_entries:
+        if entry.partner_id not in partners_with_attribution:
+            partners_with_attribution[entry.partner_id] = []
+        partners_with_attribution[entry.partner_id].append(entry)
+
+    # Create ZIP file in memory
+    zip_buffer = io.BytesIO()
+
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+        # Generate PDF for each partner
+        for partner_id, partner_entries in partners_with_attribution.items():
+            partner_name = partners.get(partner_id, partner_id)
+
+            # Generate partner statement PDF
+            partner_pdf = generate_partner_statement_pdf(
+                partner_id=partner_id,
+                partner_name=partner_name,
+                ledger_entries=ledger_entries,  # Pass all entries, function will filter
+                targets=targets,
+                report_period=report_period
+            )
+
+            # Sanitize filename (remove special characters)
+            safe_partner_name = "".join(c for c in partner_name if c.isalnum() or c in (' ', '-', '_')).strip()
+            filename = f"{safe_partner_name}_{partner_id}_statement.pdf"
+
+            # Add PDF to ZIP
+            zip_file.writestr(filename, partner_pdf)
+
+        # Add a README file to the ZIP
+        readme_content = f"""Partner Attribution Statements
+================================
+
+Report Period: {report_period or 'Current Period'}
+Generated: {datetime.now().strftime('%B %d, %Y at %I:%M %p')}
+
+This ZIP file contains individual attribution statements for all partners
+with attributed revenue in the selected period.
+
+Files included: {len(partners_with_attribution)} partner statements
+
+Instructions:
+1. Extract all files from this ZIP archive
+2. Send each PDF to the respective partner
+3. Keep a copy for your records
+
+For questions, contact your Partner Operations team.
+"""
+        zip_file.writestr("README.txt", readme_content)
+
+    zip_buffer.seek(0)
+    return zip_buffer.read()

@@ -160,8 +160,80 @@ def create_attribution_pie_chart(attribution_df: pd.DataFrame) -> go.Figure:
     return fig
 
 
+def create_deal_value_distribution(revenue_df: pd.DataFrame) -> go.Figure:
+    """
+    Create a histogram showing deal value distribution with size segments.
+
+    Args:
+        revenue_df: DataFrame with columns: amount, deal_type (optional)
+
+    Returns:
+        Plotly figure object
+    """
+    if revenue_df.empty:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="No deal data available",
+            xref="paper", yref="paper",
+            x=0.5, y=0.5, showarrow=False,
+            font=dict(size=16, color="gray")
+        )
+        return fig
+
+    # Define deal size segments
+    def categorize_deal_size(amount):
+        if amount < 25000:
+            return "SMB ($0-$25K)"
+        elif amount < 100000:
+            return "Mid-Market ($25K-$100K)"
+        elif amount < 500000:
+            return "Enterprise ($100K-$500K)"
+        else:
+            return "Strategic ($500K+)"
+
+    revenue_df['deal_segment'] = revenue_df['amount'].apply(categorize_deal_size)
+
+    # Count and sum by segment
+    segment_stats = revenue_df.groupby('deal_segment').agg({
+        'amount': ['sum', 'count']
+    }).reset_index()
+    segment_stats.columns = ['segment', 'total_value', 'count']
+
+    # Order segments
+    segment_order = ["SMB ($0-$25K)", "Mid-Market ($25K-$100K)", "Enterprise ($100K-$500K)", "Strategic ($500K+)"]
+    segment_stats['segment'] = pd.Categorical(segment_stats['segment'], categories=segment_order, ordered=True)
+    segment_stats = segment_stats.sort_values('segment')
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Bar(
+        name='Total Value',
+        x=segment_stats['segment'],
+        y=segment_stats['total_value'],
+        text=[f"${v:,.0f}" for v in segment_stats['total_value']],
+        textposition='outside',
+        marker_color=['#10b981', '#3b82f6', '#f59e0b', '#8b5cf6'],
+        hovertemplate='<b>%{x}</b><br>Total Value: $%{y:,.0f}<br><extra></extra>'
+    ))
+
+    fig.update_layout(
+        title="Deal Value Distribution by Size Segment",
+        xaxis_title="Deal Size Segment",
+        yaxis_title="Total Value ($)",
+        template='plotly_white',
+        height=400,
+        margin=dict(l=50, r=50, t=80, b=50),
+        showlegend=False
+    )
+
+    return fig
+
+
+# Keep old function for backwards compatibility but mark as deprecated
 def create_pipeline_funnel_chart(use_cases_df: pd.DataFrame) -> go.Figure:
     """
+    DEPRECATED: Use create_deal_value_distribution instead.
+
     Create a funnel chart showing pipeline value by stage.
 
     Args:
