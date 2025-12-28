@@ -4,6 +4,7 @@ A partner attribution tracking system that manages relationships between account
 
 ## Features
 
+### Core Attribution
 - **Partner Management**: Track partners and their roles (Implementation/SI, Influence, Referral, ISV)
 - **Use Case Tracking**: Manage deals/opportunities with stages, estimated values, and target close dates
 - **Automated Attribution**: Calculate revenue splits based on partner involvement
@@ -11,15 +12,38 @@ A partner attribution tracking system that manages relationships between account
 - **Revenue Attribution Ledger**: Track and explain how revenue is attributed to partners
 - **AI-Powered Insights**: Generate relationship summaries and partner recommendations (optional OpenAI integration)
 - **Audit Trail**: Complete history of all split changes and decisions
-- **Export Functionality**: Export data to CSV for analysis
+
+### Dashboards & Visualizations
+- **Executive Dashboard**: Interactive overview with key metrics and charts
+- **Revenue Trends**: Line charts showing revenue over time
+- **Partner Performance**: Bar charts and leaderboards
+- **Attribution Distribution**: Pie charts and waterfall visualizations
+- **Pipeline Funnel**: Visual representation of deal stages
+- **Partner Role Distribution**: Donut charts showing role breakdown
+
+### Export & Reporting
+- **CSV Export**: Export any data table to CSV format
+- **Excel Reports**: Multi-sheet workbooks with professional formatting
+- **PDF Reports**: Publication-ready reports with summaries and tables
+- **Bulk Export**: Complete data backup in Excel format
+- **Report Types**: Partner Performance, Account Drilldown, Audit Trail
+
+### Bulk Operations
+- **Bulk Import**: CSV import for accounts, partners, use cases, and relationships
+- **Import Validation**: Error handling and progress feedback
+- **CSV Templates**: Downloadable templates for each data type
+- **Conflict Resolution**: Automatic upsert on duplicate records
 
 ## Tech Stack
 
 - **Streamlit** - Web UI framework
 - **SQLite** - Local database
 - **Pandas** - Data manipulation
+- **Plotly** - Interactive charts and visualizations
+- **ReportLab** - PDF generation
+- **OpenPyXL & XlsxWriter** - Excel export with formatting
 - **OpenAI API** - AI features (optional)
-- **Python 3.8+** - Core language
+- **Python 3.9+** - Core language
 
 ## Quick Start
 
@@ -67,29 +91,48 @@ The app will open in your browser at `http://localhost:8501`
 
 ## Usage
 
-### Four Main Tabs
+### Six Main Tabs
 
-1. **Admin**
+1. **Dashboard**
+   - Executive overview with key metrics
+   - Interactive charts (revenue trends, partner performance, attribution distribution)
+   - Pipeline funnel visualization
+   - Export capabilities (CSV, Excel, PDF)
+   - Customizable time periods
+
+2. **Admin**
    - Configure split cap enforcement
    - Set Implementation (SI) auto-split rules
    - Manage business rules
+   - Bulk import/export operations
+   - CSV template downloads
    - Reset demo data
    - Recompute attribution ledger
+   - LLM prompt configuration
 
-2. **Account Partner 360**
+3. **Account Partner 360**
    - Link partners to use cases
    - View and manage partner splits
    - Apply rules automatically
+   - Advanced filtering (account, stage, partner)
+   - Partner leaderboard with export
 
-3. **Account Drilldown**
+4. **Account Drilldown**
    - View attributed revenue by partner
    - See detailed explanations for attribution decisions
    - Review revenue events
+   - Export account reports (Excel, PDF)
 
-4. **Relationship Summary (AI)**
+5. **Relationship Summary (AI)**
    - Generate AI-powered relationship summaries
    - View activity history
    - Get partner recommendations
+
+6. **Audit Trail**
+   - Complete change history
+   - Filter by date, event type, account
+   - Export audit logs (CSV, Excel, PDF)
+   - Metrics dashboard
 
 ### Key Workflows
 

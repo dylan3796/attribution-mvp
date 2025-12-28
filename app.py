@@ -16,6 +16,30 @@ from utils import (
     setup_logging,
     render_apply_summary_dict
 )
+from dashboards import (
+    create_revenue_over_time_chart,
+    create_partner_performance_bar_chart,
+    create_attribution_pie_chart,
+    create_pipeline_funnel_chart,
+    create_account_health_gauge,
+    create_attribution_waterfall,
+    create_partner_role_distribution
+)
+from exports import (
+    export_to_csv,
+    export_to_excel,
+    generate_pdf_report,
+    create_partner_performance_report,
+    create_account_drilldown_report
+)
+from bulk_operations import (
+    import_accounts_from_csv,
+    import_partners_from_csv,
+    import_use_cases_from_csv,
+    import_use_case_partners_from_csv,
+    export_all_data,
+    get_import_template
+)
 
 # Setup logging
 setup_logging(LOG_LEVEL, LOG_FILE)
@@ -267,14 +291,272 @@ if "ledger_bootstrap" not in st.session_state:
 accounts = read_sql("SELECT account_id, account_name FROM accounts ORDER BY account_name;")
 
 tabs = st.tabs([
+    "Dashboard",
     "Admin",
     "Account Partner 360",
     "Account Drilldown",
     "Relationship Summary (AI)",
+    "Audit Trail",
 ])
 
-# --- Tab 1: Admin ---
+# --- Tab 0: Dashboard ---
 with tabs[0]:
+    st.title("Attribution Dashboard")
+    st.caption("Executive overview of partner attribution performance and metrics")
+
+    # Date range selector
+    col1, col2, col3 = st.columns([2, 2, 1])
+    with col1:
+        dashboard_days = st.selectbox(
+            "Time Period",
+            [7, 30, 60, 90, 180],
+            index=1,
+            format_func=lambda x: f"Last {x} days"
+        )
+    with col2:
+        refresh_dashboard = st.button("Refresh Dashboard", type="primary")
+
+    # Calculate date range
+    end_date = date.today()
+    start_date = end_date - timedelta(days=dashboard_days)
+    start_str = start_date.isoformat()
+    end_str = end_date.isoformat()
+
+    # Fetch dashboard data
+    with st.spinner("Loading dashboard data..."):
+        # Revenue data
+        revenue_df = read_sql("""
+            SELECT revenue_date, amount, account_id
+            FROM revenue_events
+            WHERE revenue_date BETWEEN ? AND ?
+            ORDER BY revenue_date;
+        """, (start_str, end_str))
+
+        # Attribution data
+        attribution_df = read_sql("""
+            SELECT
+                p.partner_name,
+                p.partner_id,
+                SUM(ae.attributed_amount) AS attributed_amount,
+                AVG(ae.split_percent) AS avg_split_percent,
+                COUNT(DISTINCT ae.account_id) AS accounts_influenced
+            FROM attribution_events ae
+            JOIN partners p ON p.partner_id = ae.actor_id
+            WHERE ae.revenue_date BETWEEN ? AND ?
+            GROUP BY p.partner_name, p.partner_id
+            ORDER BY attributed_amount DESC;
+        """, (start_str, end_str))
+
+        # Use cases by stage
+        use_cases_df = read_sql("""
+            SELECT use_case_id, use_case_name, stage, estimated_value, target_close_date, account_id
+            FROM use_cases
+            WHERE estimated_value IS NOT NULL;
+        """)
+
+        # Partner roles distribution
+        partner_roles_df = read_sql("""
+            SELECT partner_role, use_case_id, partner_id
+            FROM use_case_partners;
+        """)
+
+        # Account health metrics
+        account_health_df = read_sql("""
+            SELECT
+                a.account_id,
+                a.account_name,
+                COUNT(DISTINCT u.use_case_id) AS active_use_cases,
+                COUNT(DISTINCT ap.partner_id) AS total_partners,
+                COALESCE(SUM(CASE WHEN u.stage = 'Live' THEN u.estimated_value ELSE 0 END), 0) AS live_value
+            FROM accounts a
+            LEFT JOIN use_cases u ON u.account_id = a.account_id
+            LEFT JOIN account_partners ap ON ap.account_id = a.account_id
+            GROUP BY a.account_id, a.account_name;
+        """)
+
+    # Key Metrics Row
+    st.markdown("### Key Metrics")
+    metric_cols = st.columns(5)
+
+    total_revenue = float(revenue_df['amount'].sum()) if not revenue_df.empty else 0.0
+    total_attributed = float(attribution_df['attributed_amount'].sum()) if not attribution_df.empty else 0.0
+    attribution_coverage = (total_attributed / total_revenue * 100) if total_revenue > 0 else 0.0
+    total_accounts = len(accounts_df)
+    total_partners = len(partners_df)
+    total_use_cases = len(use_cases_df)
+
+    with metric_cols[0]:
+        st.metric(
+            "Total Revenue",
+            f"${total_revenue:,.0f}",
+            delta=f"{dashboard_days}d period"
+        )
+
+    with metric_cols[1]:
+        st.metric(
+            "Attributed Revenue",
+            f"${total_attributed:,.0f}",
+            delta=f"{attribution_coverage:.1f}% coverage"
+        )
+
+    with metric_cols[2]:
+        st.metric(
+            "Active Accounts",
+            f"{total_accounts}",
+            delta=f"{len(ap_df)} with partners"
+        )
+
+    with metric_cols[3]:
+        st.metric(
+            "Partner Count",
+            f"{total_partners}",
+            delta=f"{len(attribution_df)} active"
+        )
+
+    with metric_cols[4]:
+        st.metric(
+            "Use Cases",
+            f"{total_use_cases}",
+            delta=f"{len(use_cases_df[use_cases_df['stage'] == 'Live'])} live"
+        )
+
+    st.markdown("---")
+
+    # Charts Row 1: Revenue and Attribution
+    st.markdown("### Revenue & Attribution Trends")
+    chart_col1, chart_col2 = st.columns(2)
+
+    with chart_col1:
+        st.plotly_chart(
+            create_revenue_over_time_chart(revenue_df),
+            use_container_width=True,
+            key="revenue_trend"
+        )
+
+    with chart_col2:
+        st.plotly_chart(
+            create_attribution_pie_chart(attribution_df),
+            use_container_width=True,
+            key="attribution_pie"
+        )
+
+    st.markdown("---")
+
+    # Charts Row 2: Partner Performance and Pipeline
+    st.markdown("### Partner Performance & Pipeline")
+    chart_col3, chart_col4 = st.columns(2)
+
+    with chart_col3:
+        st.plotly_chart(
+            create_partner_performance_bar_chart(attribution_df),
+            use_container_width=True,
+            key="partner_performance"
+        )
+
+    with chart_col4:
+        st.plotly_chart(
+            create_pipeline_funnel_chart(use_cases_df),
+            use_container_width=True,
+            key="pipeline_funnel"
+        )
+
+    st.markdown("---")
+
+    # Charts Row 3: Partner Roles and Attribution Waterfall
+    st.markdown("### Partner Insights")
+    chart_col5, chart_col6 = st.columns(2)
+
+    with chart_col5:
+        st.plotly_chart(
+            create_partner_role_distribution(partner_roles_df),
+            use_container_width=True,
+            key="role_distribution"
+        )
+
+    with chart_col6:
+        st.plotly_chart(
+            create_attribution_waterfall(attribution_df, total_revenue),
+            use_container_width=True,
+            key="waterfall"
+        )
+
+    st.markdown("---")
+
+    # Export Section
+    st.markdown("### Export Dashboard Data")
+    export_cols = st.columns(4)
+
+    with export_cols[0]:
+        if not revenue_df.empty:
+            csv_data = export_to_csv(revenue_df, "revenue_data.csv")
+            st.download_button(
+                "Download Revenue CSV",
+                data=csv_data,
+                file_name=f"revenue_{start_str}_to_{end_str}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+
+    with export_cols[1]:
+        if not attribution_df.empty:
+            csv_data = export_to_csv(attribution_df, "attribution_data.csv")
+            st.download_button(
+                "Download Attribution CSV",
+                data=csv_data,
+                file_name=f"attribution_{start_str}_to_{end_str}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+
+    with export_cols[2]:
+        if not use_cases_df.empty or not attribution_df.empty:
+            excel_data = export_to_excel({
+                "Revenue": revenue_df,
+                "Attribution": attribution_df,
+                "Use Cases": use_cases_df,
+                "Partner Roles": partner_roles_df
+            })
+            st.download_button(
+                "Download Excel Report",
+                data=excel_data,
+                file_name=f"dashboard_report_{start_str}_to_{end_str}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+
+    with export_cols[3]:
+        if not attribution_df.empty:
+            pdf_data = create_partner_performance_report(
+                attribution_df,
+                attribution_df,
+                f"{start_str} to {end_str}"
+            )
+            st.download_button(
+                "Download PDF Report",
+                data=pdf_data,
+                file_name=f"partner_performance_{start_str}_to_{end_str}.pdf",
+                mime="application/pdf",
+                use_container_width=True
+            )
+
+    st.markdown("---")
+
+    # Top Performers Table
+    st.markdown("### Top Performing Partners")
+    if not attribution_df.empty:
+        top_partners = attribution_df.head(10).copy()
+        top_partners['attributed_amount'] = top_partners['attributed_amount'].apply(lambda x: f"${x:,.2f}")
+        top_partners['avg_split_percent'] = top_partners['avg_split_percent'].apply(lambda x: f"{x:.1%}")
+        st.dataframe(
+            top_partners[['partner_name', 'attributed_amount', 'accounts_influenced', 'avg_split_percent']],
+            use_container_width=True,
+            hide_index=True
+        )
+    else:
+        st.info("No partner attribution data available for the selected period.")
+
+# --- Tab 1: Admin ---
+with tabs[1]:
     st.subheader("Settings")
     st.caption("Configure guardrails and reset demo data.")
 
@@ -536,8 +818,113 @@ with tabs[0]:
         set_setting("prompt_ai_recommendations", pr_recs)
         st.success("Prompts updated.")
 
-# --- Tab 2: Relationships ---
-with tabs[1]:
+    st.markdown("---")
+    st.subheader("Bulk Import / Export")
+    st.caption("Import data from CSV or export all data for backup.")
+
+    bulk_tabs = st.tabs(["Import", "Export", "Templates"])
+
+    with bulk_tabs[0]:
+        st.markdown("### Bulk Import")
+        import_type = st.selectbox(
+            "Select data type to import",
+            ["accounts", "partners", "use_cases", "use_case_partners"],
+            format_func=lambda x: x.replace("_", " ").title()
+        )
+
+        uploaded_file = st.file_uploader(
+            f"Upload {import_type.replace('_', ' ').title()} CSV",
+            type=["csv"],
+            key=f"upload_{import_type}"
+        )
+
+        if uploaded_file is not None:
+            st.info(f"File uploaded: {uploaded_file.name}")
+
+            if st.button(f"Import {import_type.replace('_', ' ').title()}", type="primary"):
+                with st.spinner(f"Importing {import_type}..."):
+                    csv_content = uploaded_file.read()
+
+                    if import_type == "accounts":
+                        success, errors_count, error_msgs = import_accounts_from_csv(csv_content, db)
+                    elif import_type == "partners":
+                        success, errors_count, error_msgs = import_partners_from_csv(csv_content, db)
+                    elif import_type == "use_cases":
+                        success, errors_count, error_msgs = import_use_cases_from_csv(csv_content, db)
+                    elif import_type == "use_case_partners":
+                        success, errors_count, error_msgs = import_use_case_partners_from_csv(csv_content, db)
+                    else:
+                        success, errors_count, error_msgs = 0, 0, ["Unknown import type"]
+
+                    if success > 0:
+                        st.success(f"Successfully imported {success} records!")
+                    if errors_count > 0:
+                        st.error(f"Failed to import {errors_count} records")
+                        with st.expander("View errors"):
+                            for msg in error_msgs[:20]:
+                                st.text(msg)
+                    if success == 0 and errors_count == 0:
+                        st.warning("No records were processed")
+
+    with bulk_tabs[1]:
+        st.markdown("### Export All Data")
+        st.caption("Download a complete backup of all data tables.")
+
+        if st.button("Generate Full Export", type="primary"):
+            with st.spinner("Exporting all data..."):
+                all_data = export_all_data(db)
+
+                if all_data:
+                    excel_data = export_to_excel(all_data)
+                    st.download_button(
+                        "Download Complete Data Export (Excel)",
+                        data=excel_data,
+                        file_name=f"attribution_full_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
+                    )
+                    st.success(f"Export ready! Contains {len(all_data)} tables.")
+
+    with bulk_tabs[2]:
+        st.markdown("### CSV Templates")
+        st.caption("Download template files for bulk imports.")
+
+        template_cols = st.columns(2)
+
+        with template_cols[0]:
+            st.download_button(
+                "Accounts Template",
+                data=get_import_template('accounts'),
+                file_name="accounts_template.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+            st.download_button(
+                "Use Cases Template",
+                data=get_import_template('use_cases'),
+                file_name="use_cases_template.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+
+        with template_cols[1]:
+            st.download_button(
+                "Partners Template",
+                data=get_import_template('partners'),
+                file_name="partners_template.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+            st.download_button(
+                "Use Case Partners Template",
+                data=get_import_template('use_case_partners'),
+                file_name="use_case_partners_template.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+
+# --- Tab 2: Account Partner 360 ---
+with tabs[2]:
     st.subheader("Catalog & links")
     st.caption("Accounts, use cases, and partner links in one place. Imported CRM links will appear here.")
     tag_source_setting = get_setting("use_case_tag_source", "hybrid")
@@ -843,7 +1230,7 @@ with tabs[1]:
         )
 
 # --- Tab 3: Account Drilldown ---
-with tabs[2]:
+with tabs[3]:
     st.subheader("Account drilldown (use cases + revenue)")
     if accounts.empty:
         st.info("No accounts available.")
@@ -945,8 +1332,46 @@ with tabs[2]:
         else:
             st.dataframe(rev, use_container_width=True)
 
+        # Export Account Drilldown
+        st.markdown("---")
+        st.markdown("**Export Account Data**")
+        export_drilldown_cols = st.columns(3)
+
+        with export_drilldown_cols[0]:
+            if not acct_use_cases.empty or not acct_ap.empty:
+                excel_data = export_to_excel({
+                    "Use Cases": acct_use_cases,
+                    "Partners": acct_ap,
+                    "Revenue": rev,
+                    "Attribution": attr_by_partner
+                })
+                st.download_button(
+                    "Download Account Excel",
+                    data=excel_data,
+                    file_name=f"account_{selected_account_id}_report.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+
+        with export_drilldown_cols[1]:
+            if not acct_use_cases.empty or not acct_ap.empty:
+                pdf_data = create_account_drilldown_report(
+                    account_name=acct_choice,
+                    use_cases=acct_use_cases,
+                    partners=acct_ap,
+                    revenue=rev,
+                    attribution=attr_by_partner
+                )
+                st.download_button(
+                    "Download Account PDF",
+                    data=pdf_data,
+                    file_name=f"account_{selected_account_id}_report.pdf",
+                    mime="application/pdf",
+                    use_container_width=True
+                )
+
 # --- Tab 4: Relationship Summary (AI) ---
-with tabs[3]:
+with tabs[4]:
     st.subheader("Relationship Summary (AI)")
     st.caption("Blend accounts, use cases, partners, activities, and recent attribution into a single summary. Works without an API key using a deterministic fallback.")
     acct_map_rel = {f"{row['account_name']} ({row['account_id']})": row["account_id"] for _, row in accounts.iterrows()}
@@ -986,4 +1411,176 @@ with tabs[3]:
             st.info("No activities logged.")
         else:
             st.dataframe(rel_acts, use_container_width=True)
+
+# --- Tab 5: Audit Trail ---
+with tabs[5]:
+    st.subheader("Audit Trail")
+    st.caption("Complete history of all changes and decisions in the attribution system")
+
+    # Filters
+    filter_row = st.columns([2, 2, 2, 1])
+    with filter_row[0]:
+        trail_days = st.selectbox(
+            "Time Period",
+            [7, 14, 30, 60, 90, 180, 365],
+            index=2,
+            format_func=lambda x: f"Last {x} days",
+            key="audit_days"
+        )
+
+    with filter_row[1]:
+        event_type_filter = st.selectbox(
+            "Event Type",
+            ["All", "split_change", "partner_link", "use_case_created", "rule_applied", "manual_override"],
+            key="event_type_filter"
+        )
+
+    with filter_row[2]:
+        account_filter_audit = st.selectbox(
+            "Account",
+            ["All"] + [f"{row['account_name']}" for _, row in accounts.iterrows()],
+            key="account_filter_audit"
+        )
+
+    with filter_row[3]:
+        show_details = st.checkbox("Show Details", value=False, key="audit_details")
+
+    # Calculate date range
+    audit_end_date = date.today()
+    audit_start_date = audit_end_date - timedelta(days=trail_days)
+    audit_start_str = audit_start_date.isoformat()
+    audit_end_str = audit_end_date.isoformat()
+
+    # Fetch audit trail
+    audit_query = """
+        SELECT
+            at.timestamp,
+            at.event_type,
+            at.account_id,
+            a.account_name,
+            at.partner_id,
+            p.partner_name,
+            at.old_value,
+            at.new_value,
+            at.source,
+            at.metadata
+        FROM audit_trail at
+        LEFT JOIN accounts a ON a.account_id = at.account_id
+        LEFT JOIN partners p ON p.partner_id = at.partner_id
+        WHERE at.timestamp >= ?
+    """
+    params = [audit_start_str]
+
+    if event_type_filter != "All":
+        audit_query += " AND at.event_type = ?"
+        params.append(event_type_filter)
+
+    if account_filter_audit != "All":
+        audit_query += " AND a.account_name = ?"
+        params.append(account_filter_audit)
+
+    audit_query += " ORDER BY at.timestamp DESC LIMIT 1000;"
+
+    audit_trail = read_sql(audit_query, tuple(params))
+
+    # Display metrics
+    metrics_audit = st.columns(4)
+    with metrics_audit[0]:
+        st.metric("Total Events", len(audit_trail))
+
+    if not audit_trail.empty:
+        with metrics_audit[1]:
+            unique_accounts = audit_trail['account_id'].nunique()
+            st.metric("Accounts Affected", unique_accounts)
+
+        with metrics_audit[2]:
+            unique_partners = audit_trail['partner_id'].nunique()
+            st.metric("Partners Involved", unique_partners)
+
+        with metrics_audit[3]:
+            event_types = audit_trail['event_type'].nunique()
+            st.metric("Event Types", event_types)
+
+    st.markdown("---")
+
+    # Display audit trail
+    if audit_trail.empty:
+        st.info("No audit trail events found for the selected filters.")
+    else:
+        # Format the dataframe for display
+        display_audit = audit_trail.copy()
+
+        # Rename columns for better readability
+        display_audit['Timestamp'] = pd.to_datetime(display_audit['timestamp']).dt.strftime('%Y-%m-%d %H:%M:%S')
+        display_audit['Event Type'] = display_audit['event_type']
+        display_audit['Account'] = display_audit['account_name'].fillna('N/A')
+        display_audit['Partner'] = display_audit['partner_name'].fillna('N/A')
+
+        if show_details:
+            display_audit['Old Value'] = display_audit['old_value'].fillna('N/A')
+            display_audit['New Value'] = display_audit['new_value'].fillna('N/A')
+            display_audit['Source'] = display_audit['source'].fillna('N/A')
+            display_audit['Metadata'] = display_audit['metadata'].fillna('N/A')
+
+            st.dataframe(
+                display_audit[['Timestamp', 'Event Type', 'Account', 'Partner', 'Old Value', 'New Value', 'Source', 'Metadata']],
+                use_container_width=True,
+                hide_index=True
+            )
+        else:
+            st.dataframe(
+                display_audit[['Timestamp', 'Event Type', 'Account', 'Partner']],
+                use_container_width=True,
+                hide_index=True
+            )
+
+    st.markdown("---")
+
+    # Export audit trail
+    st.markdown("### Export Audit Trail")
+    export_audit_cols = st.columns(3)
+
+    with export_audit_cols[0]:
+        if not audit_trail.empty:
+            csv_data = export_to_csv(audit_trail, "audit_trail.csv")
+            st.download_button(
+                "Download Audit Trail CSV",
+                data=csv_data,
+                file_name=f"audit_trail_{audit_start_str}_to_{audit_end_str}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+
+    with export_audit_cols[1]:
+        if not audit_trail.empty:
+            excel_data = export_to_excel({
+                "Audit Trail": audit_trail
+            })
+            st.download_button(
+                "Download Audit Trail Excel",
+                data=excel_data,
+                file_name=f"audit_trail_{audit_start_str}_to_{audit_end_str}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+
+    with export_audit_cols[2]:
+        if not audit_trail.empty:
+            pdf_data = generate_pdf_report(
+                title="Audit Trail Report",
+                summary_data={
+                    "Report Period": f"{audit_start_str} to {audit_end_str}",
+                    "Total Events": len(audit_trail),
+                    "Accounts Affected": audit_trail['account_id'].nunique(),
+                    "Partners Involved": audit_trail['partner_id'].nunique(),
+                },
+                tables={"Audit Events": audit_trail[['timestamp', 'event_type', 'account_name', 'partner_name', 'source']]}
+            )
+            st.download_button(
+                "Download Audit Trail PDF",
+                data=pdf_data,
+                file_name=f"audit_trail_{audit_start_str}_to_{audit_end_str}.pdf",
+                mime="application/pdf",
+                use_container_width=True
+            )
 

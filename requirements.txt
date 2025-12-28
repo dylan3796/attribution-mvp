@@ -3,6 +3,15 @@ pandas
 openai
 python-dotenv
 
+# Visualization & Charts
+plotly
+altair
+
+# Export functionality
+openpyxl
+reportlab
+xlsxwriter
+
 # Testing
 pytest
 pytest-cov
