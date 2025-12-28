@@ -252,6 +252,7 @@ tabs = st.tabs([
     "📥 Data Import",
     "⚙️ Rule Builder",
     "📋 Rules & Templates",
+    "💰 Deal Drilldown",
     "🔍 Ledger Explorer"
 ])
 
@@ -1155,10 +1156,315 @@ with tabs[3]:
 
 
 # ============================================================================
-# TAB 4: LEDGER EXPLORER (NEW)
+# TAB 4: DEAL DRILLDOWN (NEW)
 # ============================================================================
 
 with tabs[4]:
+    st.title("💰 Deal Drilldown")
+    st.caption("Detailed attribution breakdown for individual deals - perfect for partner dispute resolution")
+
+    if not st.session_state.targets:
+        st.info("No deals available. Load data first in the Data Import tab.")
+    else:
+        # Deal Selector
+        st.markdown("### Select Deal to Analyze")
+
+        deal_options = {}
+        for target in st.session_state.targets:
+            account_name = target.metadata.get('account_name', 'Unknown Account')
+            deal_label = f"{target.external_id} - {account_name} (${target.value:,.0f})"
+            deal_options[deal_label] = target.id
+
+        selected_deal_label = st.selectbox(
+            "Choose Deal",
+            options=list(deal_options.keys()),
+            help="Select a deal to see its full attribution breakdown"
+        )
+
+        selected_target_id = deal_options[selected_deal_label]
+        selected_target = next(t for t in st.session_state.targets if t.id == selected_target_id)
+
+        # Deal Summary Card
+        st.markdown("---")
+        st.markdown("### Deal Information")
+
+        deal_col1, deal_col2, deal_col3, deal_col4 = st.columns(4)
+
+        with deal_col1:
+            st.metric("Deal Value", f"${selected_target.value:,.0f}")
+
+        with deal_col2:
+            account_name = selected_target.metadata.get('account_name', 'Unknown')
+            st.metric("Account", account_name)
+
+        with deal_col3:
+            close_date = selected_target.timestamp.strftime("%Y-%m-%d") if selected_target.timestamp else "N/A"
+            st.metric("Close Date", close_date)
+
+        with deal_col4:
+            region = selected_target.metadata.get('region', 'N/A')
+            st.metric("Region", region)
+
+        # Partner Touchpoints
+        st.markdown("---")
+        st.markdown("### Partner Engagement History")
+
+        deal_touchpoints = [tp for tp in st.session_state.touchpoints if tp.target_id == selected_target_id]
+
+        if deal_touchpoints:
+            touchpoint_data = []
+            for tp in sorted(deal_touchpoints, key=lambda x: x.timestamp or datetime.min):
+                partner_name = st.session_state.partners.get(tp.partner_id, tp.partner_id)
+                touchpoint_data.append({
+                    "Partner": partner_name,
+                    "Role": tp.role,
+                    "Date": tp.timestamp.strftime("%Y-%m-%d") if tp.timestamp else "N/A",
+                    "Activity Weight": f"{tp.weight:.0f}",
+                    "Days Before Close": (selected_target.timestamp - tp.timestamp).days if (selected_target.timestamp and tp.timestamp) else "N/A"
+                })
+
+            st.dataframe(pd.DataFrame(touchpoint_data), use_container_width=True, hide_index=True)
+        else:
+            st.warning("No partner touchpoints recorded for this deal.")
+
+        # Attribution Breakdown
+        st.markdown("---")
+        st.markdown("### Attribution Calculation Breakdown")
+
+        deal_ledger = [entry for entry in st.session_state.ledger if entry.target_id == selected_target_id]
+
+        if deal_ledger:
+            # Summary metrics
+            total_attributed = sum(entry.attributed_value for entry in deal_ledger)
+            attribution_coverage = (total_attributed / selected_target.value * 100) if selected_target.value > 0 else 0
+
+            summary_col1, summary_col2, summary_col3 = st.columns(3)
+
+            with summary_col1:
+                st.metric("Total Attributed", f"${total_attributed:,.2f}", help="Sum of all partner attribution for this deal")
+
+            with summary_col2:
+                st.metric("Coverage", f"{attribution_coverage:.1f}%", help="Percentage of deal value attributed to partners")
+
+            with summary_col3:
+                st.metric("Partners Credited", len(deal_ledger), help="Number of partners receiving attribution")
+
+            # Detailed Attribution Table
+            st.markdown("#### Partner-by-Partner Breakdown")
+
+            attribution_data = []
+            for entry in sorted(deal_ledger, key=lambda e: e.attributed_value, reverse=True):
+                partner_name = st.session_state.partners.get(entry.partner_id, entry.partner_id)
+                rule = next((r for r in st.session_state.rules if r.id == entry.rule_id), None)
+                rule_name = rule.name if rule else f"Rule #{entry.rule_id}"
+
+                # Get touchpoint details for this partner
+                partner_tps = [tp for tp in deal_touchpoints if tp.partner_id == entry.partner_id]
+                num_touchpoints = len(partner_tps)
+                roles = ", ".join(set(tp.role for tp in partner_tps)) if partner_tps else "N/A"
+
+                attribution_data.append({
+                    "Partner": partner_name,
+                    "Role(s)": roles,
+                    "Touchpoints": num_touchpoints,
+                    "Attribution %": f"{entry.split_percentage:.1%}",
+                    "Attributed $": f"${entry.attributed_value:,.2f}",
+                    "Rule Applied": rule_name,
+                    "Calculated": entry.calculation_timestamp.strftime("%Y-%m-%d %H:%M")
+                })
+
+            st.dataframe(pd.DataFrame(attribution_data), use_container_width=True, hide_index=True)
+
+            # Visualization
+            st.markdown("#### Attribution Split Visualization")
+
+            attribution_chart_df = pd.DataFrame([
+                {"Partner": st.session_state.partners.get(entry.partner_id, entry.partner_id),
+                 "Value": entry.attributed_value}
+                for entry in deal_ledger
+            ])
+
+            import plotly.express as px
+            fig = px.pie(
+                attribution_chart_df,
+                values='Value',
+                names='Partner',
+                title=f"Attribution Split - {selected_target.external_id}",
+                hole=0.4
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+            # Audit Trail
+            with st.expander("🔍 View Detailed Audit Trail"):
+                st.markdown("**Calculation Logic:**")
+                for entry in deal_ledger:
+                    rule = next((r for r in st.session_state.rules if r.id == entry.rule_id), None)
+                    if rule:
+                        st.json({
+                            "partner_id": entry.partner_id,
+                            "rule_name": rule.name,
+                            "model_type": rule.model_type.value,
+                            "config": rule.config,
+                            "split_percentage": entry.split_percentage,
+                            "attributed_value": entry.attributed_value,
+                            "audit_trail": entry.audit_trail
+                        })
+
+        else:
+            st.warning("No attribution calculated for this deal. Run attribution calculation in the Ledger Explorer tab.")
+
+        # Manual Override Section
+        st.markdown("---")
+        st.markdown("### 🛠️ Manual Attribution Override")
+
+        with st.expander("⚠️ Adjust Attribution Manually (Advanced)"):
+            st.warning("**Use with caution!** Manual overrides bypass attribution rules and are recorded in the audit trail.")
+
+            st.markdown("**When to use manual overrides:**")
+            st.markdown("""
+            - Partner disputes that require special handling
+            - One-time exceptional circumstances
+            - Corrections to data entry errors
+            - Executive decisions that override standard rules
+            """)
+
+            if deal_ledger:
+                st.markdown("#### Current Attribution")
+
+                # Create editable form
+                with st.form(key=f"override_form_{selected_target_id}"):
+                    st.markdown("Adjust the split percentages below. They must sum to 100%.")
+
+                    override_splits = {}
+                    total_percentage = 0
+
+                    for entry in sorted(deal_ledger, key=lambda e: e.attributed_value, reverse=True):
+                        partner_name = st.session_state.partners.get(entry.partner_id, entry.partner_id)
+                        current_percent = entry.split_percentage * 100
+
+                        override_col1, override_col2 = st.columns([3, 1])
+
+                        with override_col1:
+                            st.markdown(f"**{partner_name}** ({entry.partner_id})")
+
+                        with override_col2:
+                            new_percent = st.number_input(
+                                f"Split % for {partner_name}",
+                                min_value=0.0,
+                                max_value=100.0,
+                                value=current_percent,
+                                step=0.1,
+                                format="%.1f",
+                                key=f"override_{entry.partner_id}_{selected_target_id}",
+                                label_visibility="collapsed"
+                            )
+                            override_splits[entry.partner_id] = new_percent / 100.0
+                            total_percentage += new_percent
+
+                    # Show total validation
+                    if abs(total_percentage - 100.0) > 0.1:
+                        st.error(f"⚠️ Total must equal 100%. Current total: {total_percentage:.1f}%")
+                        submit_disabled = True
+                    else:
+                        st.success(f"✓ Total: {total_percentage:.1f}%")
+                        submit_disabled = False
+
+                    # Override reason
+                    override_reason = st.text_area(
+                        "Reason for Override (Required)",
+                        placeholder="Explain why manual override is necessary...",
+                        help="This will be recorded in the audit trail for compliance"
+                    )
+
+                    submit_col1, submit_col2 = st.columns([1, 1])
+
+                    with submit_col1:
+                        submit_override = st.form_submit_button(
+                            "Apply Override",
+                            type="primary" if not submit_disabled else None,
+                            disabled=submit_disabled or not override_reason,
+                            use_container_width=True
+                        )
+
+                    with submit_col2:
+                        if st.form_submit_button("Reset to Calculated", use_container_width=True):
+                            st.info("Recalculate attribution in the Ledger Explorer to restore automatic calculations.")
+
+                if submit_override and override_reason:
+                    # Apply manual overrides
+                    current_user = "admin"  # TODO: Replace with actual user when auth is implemented
+
+                    # Remove old ledger entries for this deal
+                    st.session_state.ledger = [e for e in st.session_state.ledger if e.target_id != selected_target_id]
+
+                    # Create new ledger entries with manual override
+                    next_ledger_id = max([e.id for e in st.session_state.ledger], default=0) + 1
+
+                    for partner_id, split_pct in override_splits.items():
+                        if split_pct > 0:  # Only create entries for non-zero splits
+                            # Find original entry to get rule_id
+                            original_entry = next((e for e in deal_ledger if e.partner_id == partner_id), None)
+                            rule_id = original_entry.rule_id if original_entry else 0
+
+                            override_entry = LedgerEntry(
+                                id=next_ledger_id,
+                                target_id=selected_target_id,
+                                partner_id=partner_id,
+                                attributed_value=selected_target.value * split_pct,
+                                split_percentage=split_pct,
+                                rule_id=rule_id,
+                                calculation_timestamp=datetime.now(),
+                                override_by=current_user,
+                                override_reason=override_reason,
+                                audit_trail={
+                                    "method": "manual_override",
+                                    "override_by": current_user,
+                                    "override_reason": override_reason,
+                                    "override_timestamp": datetime.now().isoformat(),
+                                    "original_split": next((e.split_percentage for e in deal_ledger if e.partner_id == partner_id), None)
+                                }
+                            )
+
+                            st.session_state.ledger.append(override_entry)
+                            next_ledger_id += 1
+
+                    st.success(f"✅ Manual override applied! {len([s for s in override_splits.values() if s > 0])} partners updated.")
+                    st.balloons()
+                    st.rerun()
+
+            else:
+                st.info("No attribution calculated yet. Run attribution calculation first.")
+
+        # Export Deal Report
+        st.markdown("---")
+        st.markdown("### Export Deal Report")
+
+        if deal_ledger:
+            export_col1, export_col2 = st.columns([3, 1])
+
+            with export_col1:
+                st.info("Generate a detailed PDF report for this deal, perfect for sharing with partners or resolving disputes.")
+
+            with export_col2:
+                # Generate simple CSV export for now
+                deal_export_df = pd.DataFrame(attribution_data) if deal_ledger else pd.DataFrame()
+
+                if not deal_export_df.empty:
+                    csv_data = deal_export_df.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        "📥 Download CSV",
+                        data=csv_data,
+                        file_name=f"deal_{selected_target.external_id}_attribution.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
+
+
+# ============================================================================
+# TAB 5: LEDGER EXPLORER (NEW)
+# ============================================================================
+
+with tabs[5]:
     st.title("🔍 Attribution Ledger Explorer")
     st.caption("Immutable audit trail of all attribution calculations")
 
