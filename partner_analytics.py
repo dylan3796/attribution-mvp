@@ -538,11 +538,11 @@ def _detect_coverage_alert(
     if coverage < threshold:
         return Alert(
             severity="warning",
-            title="Low Attribution Coverage",
-            description=f"Attribution coverage at {coverage:.1%} (below {threshold:.0%} target)",
+            title="Attribution Coverage Below Target",
+            description=f"Partner touchpoint attribution at {coverage:.1%} of closed deals (target: {threshold:.0%}) - gap of ${(total_revenue - attributed_revenue):,.0f}",
             partner_id=None,
             partner_name=None,
-            recommended_action="Review touchpoint logging for large deals",
+            recommended_action="Audit recent high-value opportunities to ensure partner engagement is properly captured in CRM",
             timestamp=datetime.now()
         )
 
@@ -582,11 +582,11 @@ def _detect_disengagement_alerts(
             partner_name = partners.get(partner_id, partner_id)
             alerts.append(Alert(
                 severity="warning",
-                title="Partner Disengagement",
-                description=f"{partner_name}: No activity in {days_since} days",
+                title="Partner Disengagement Risk",
+                description=f"{partner_name}: No touchpoint activity in {days_since} days - below normal engagement cadence",
                 partner_id=partner_id,
                 partner_name=partner_name,
-                recommended_action="Schedule check-in call",
+                recommended_action="Proactive outreach recommended to re-engage partner account team",
                 timestamp=datetime.now()
             ))
 
@@ -628,11 +628,11 @@ def _detect_top_performers(
         if growth >= 0.20 and (win_rate is None or win_rate >= 0.60):
             alerts.append(Alert(
                 severity="info",
-                title="Top Performer",
-                description=f"{partner_name}: +{growth*100:.0f}% growth" + (f", {win_rate:.0%} win rate" if win_rate else ""),
+                title="High-Performing Partner",
+                description=f"{partner_name}: Strong performance with +{growth*100:.0f}% attributed revenue growth" + (f" and {win_rate:.0%} close rate" if win_rate else ""),
                 partner_id=partner_id,
                 partner_name=partner_name,
-                recommended_action="Consider: Expand partnership, quarterly business review",
+                recommended_action="Opportunity to deepen partnership investment and expand co-selling motion",
                 timestamp=datetime.now()
             ))
 
@@ -747,58 +747,76 @@ def generate_partner_insights(
     improvements = []
     recommendations = []
 
+    revenue_growth = metrics.get('revenue_growth', 0)
+    win_rate = metrics.get('win_rate')
+    avg_deal = metrics.get('avg_deal_size', 0)
+    velocity = metrics.get('deal_velocity')
+
     # Analyze revenue trend
     if health_score.revenue_trend_score >= 30:
-        strengths.append(f"Revenue growing strongly (+{metrics.get('revenue_growth', 0):.0f}% QoQ)")
+        if revenue_growth >= 50:
+            strengths.append(f"Exceptional pipeline growth at {revenue_growth:.0f}% QoQ - momentum accelerating")
+        elif revenue_growth >= 20:
+            strengths.append(f"Strong attributed revenue growth at {revenue_growth:.0f}% quarter-over-quarter")
+        else:
+            strengths.append(f"Positive revenue trajectory with {revenue_growth:.0f}% growth")
     elif health_score.revenue_trend_score < 20:
-        improvements.append(f"Revenue declining ({metrics.get('revenue_growth', 0):.0f}% QoQ)")
-        recommendations.append("Review partnership strategy and engagement plan")
+        if revenue_growth < -20:
+            improvements.append(f"Significant revenue decline at {revenue_growth:.0f}% QoQ - immediate attention needed")
+            recommendations.append("Schedule executive alignment meeting to review partnership KPIs and joint GTM strategy")
+        else:
+            improvements.append(f"Revenue contraction of {revenue_growth:.0f}% QoQ")
+            recommendations.append("Review recent deal flow and identify blockers in sales cycle")
 
     # Analyze win rate
-    if metrics.get('win_rate') is not None:
-        win_rate = metrics['win_rate']
-        baseline = 0.45  # 45% baseline
-        if win_rate >= 0.60:
-            strengths.append(f"High win rate ({win_rate:.0%} vs {baseline:.0%} baseline)")
+    if win_rate is not None:
+        baseline = 0.45
+        if win_rate >= 0.70:
+            strengths.append(f"Excellent close rate at {win_rate:.0%} - significantly outperforming peer average")
+        elif win_rate >= 0.50:
+            strengths.append(f"Solid win rate at {win_rate:.0%} on influenced opportunities")
         elif win_rate < 0.30:
-            improvements.append(f"Low win rate ({win_rate:.0%})")
-            recommendations.append("Analyze lost deals and share best practices")
+            improvements.append(f"Win rate of {win_rate:.0%} below target threshold")
+            recommendations.append("Conduct deal retrospective on recent losses to identify common patterns and objections")
 
     # Analyze engagement
     if health_score.engagement_score >= 20:
-        strengths.append("Consistent engagement (weekly touches)")
+        strengths.append("Consistent touchpoint cadence with regular deal engagement")
     elif health_score.engagement_score < 15:
-        improvements.append("Irregular engagement pattern")
-        recommendations.append("Establish regular check-in cadence")
+        improvements.append("Touchpoint frequency has decreased in recent weeks")
+        recommendations.append("Re-establish weekly pipeline review cadence with partner account team")
 
     # Analyze deal size
-    avg_deal = metrics.get('avg_deal_size', 0)
-    if avg_deal > 50000:
-        strengths.append(f"Large deal focus (${avg_deal/1000:.0f}K avg)")
-    elif health_score.deal_size_score < 8:
-        improvements.append("Average deal size declining")
-        recommendations.append("Focus on enterprise deals and upsells")
+    if avg_deal > 75000:
+        strengths.append(f"Strong enterprise focus with ${avg_deal/1000:.0f}K average deal value")
+    elif avg_deal > 50000:
+        strengths.append(f"Solid mid-market presence at ${avg_deal/1000:.0f}K average deal size")
+    elif health_score.deal_size_score < 8 and avg_deal > 0:
+        improvements.append("Average deal size trending downward compared to historical baseline")
+        recommendations.append("Explore opportunities to move upmarket or expand existing customer footprint")
 
     # Analyze velocity
-    velocity = metrics.get('deal_velocity')
-    if velocity and velocity < 40:
-        strengths.append(f"Fast deal cycles ({velocity:.0f} days avg)")
-    elif velocity and velocity > 60:
-        improvements.append(f"Deal velocity slowing ({velocity:.0f}d vs industry avg)")
-        recommendations.append("Share best practices from fast deals")
+    if velocity:
+        if velocity < 35:
+            strengths.append(f"Efficient sales cycle averaging {velocity:.0f} days from first touch to close")
+        elif velocity > 70:
+            improvements.append(f"Extended sales cycles at {velocity:.0f} days - longer than benchmark")
+            recommendations.append("Identify friction points in deal progression and streamline approval workflows")
+        elif velocity > 50:
+            improvements.append(f"Deal velocity at {velocity:.0f} days has room for optimization")
 
-    # If no strengths, add a generic one
+    # Ensure we have content
     if not strengths:
-        strengths.append("Active partner with consistent engagement")
+        strengths.append("Partner maintains active involvement in pipeline opportunities")
 
-    # If no improvements, celebrate
-    if not improvements:
-        strengths.append("All metrics performing well")
+    if not improvements and health_score.overall_score >= 80:
+        strengths.append("Partner health metrics tracking well across all dimensions")
 
-    # If no recommendations, suggest next steps
     if not recommendations:
-        recommendations.append("Continue current engagement strategy")
-        recommendations.append("Consider expanding to new use cases or regions")
+        if health_score.overall_score >= 80:
+            recommendations.append("Maintain current engagement model and explore expansion into adjacent verticals")
+        else:
+            recommendations.append("Schedule monthly business review to align on pipeline targets and enablement needs")
 
     return PartnerInsights(
         strengths=strengths,

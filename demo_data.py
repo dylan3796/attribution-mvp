@@ -26,19 +26,19 @@ from attribution_engine import AttributionEngine
 # ============================================================================
 
 DEMO_COMPANIES = [
-    "Acme Corp", "TechStart Inc", "CloudScale Systems", "DataFlow Solutions",
-    "SecureNet Ltd", "InnovateCo", "GlobalTech Partners", "FutureOps Inc",
-    "SmartData Corp", "AgileWorks LLC"
+    "Vertex Solutions", "NexGen Analytics", "Quantum Systems Inc", "Pinnacle Data Corp",
+    "Horizon Networks", "Catalyst Innovations", "Meridian Tech Group", "Apex Digital Ltd",
+    "Summit Cloud Systems", "Vanguard Enterprise Co"
 ]
 
 DEMO_PARTNER_NAMES = {
-    "P001": "Deloitte Digital",
-    "P002": "Accenture Cloud First",
-    "P003": "PartnerHub Consulting",
-    "P004": "TechAlliance Group",
-    "P005": "CloudExperts SI",
-    "P006": "DataBridge Partners",
-    "P007": "Integration Masters"
+    "P001": "Momentum Consulting Group",
+    "P002": "Elevate Systems Integrators",
+    "P003": "Insight Advisory Partners",
+    "P004": "Synergy Alliance Network",
+    "P005": "Nexus Solutions Partners",
+    "P006": "Forge Technology Partners",
+    "P007": "Pathway Integration Services"
 }
 
 DEMO_PARTNER_ROLES = {
