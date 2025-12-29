@@ -271,6 +271,7 @@ tabs = st.tabs([
     "📥 Data Import",
     "⚙️ Rule Builder",
     "📋 Rules & Templates",
+    "🔄 Measurement Workflows",
     "💰 Deal Drilldown",
     "🔍 Ledger Explorer"
 ])
@@ -1758,10 +1759,319 @@ with tabs[5]:
 
 
 # ============================================================================
-# TAB 6: DEAL DRILLDOWN (was TAB 4)
+# TAB 6: MEASUREMENT WORKFLOWS
 # ============================================================================
 
 with tabs[6]:
+    st.title("🔄 Measurement Workflows")
+    st.caption("Configure how your company measures partner contribution")
+
+    st.markdown("""
+    **Measurement Workflows** define which data sources you use to track partner impact.
+    Different companies measure partners differently - configure your approach here.
+
+    **Common workflows:**
+    - Deal Registration Primary: Use deal reg if exists, else touchpoints
+    - Marketplace Only: 100% to marketplace partner
+    - CRM Field with Fallback: Use Partner field if set, else calculate from activities
+    - Hybrid SI + Influence: 80% to deal reg, 20% to influence touchpoints
+    """)
+
+    # Initialize workflows in session state
+    if "workflows" not in st.session_state:
+        st.session_state.workflows = []
+
+    # Show existing workflows
+    if st.session_state.workflows:
+        st.markdown("### 📋 Your Workflows")
+
+        for workflow in st.session_state.workflows:
+            with st.expander(f"{'⭐ PRIMARY' if workflow.is_primary else '🔧'} {workflow.name}", expanded=False):
+                st.markdown(f"**Description:** {workflow.description}")
+
+                # Data sources
+                st.markdown("**Data Sources (Priority Order):**")
+                sorted_sources = sorted(workflow.data_sources, key=lambda x: x.priority)
+                for i, ds in enumerate(sorted_sources):
+                    status = "✅ Enabled" if ds.enabled else "❌ Disabled"
+                    st.markdown(f"{i+1}. **{ds.source_type.value}** - Priority {ds.priority} - {status}")
+                    if ds.config:
+                        st.json(ds.config)
+
+                # Conflict resolution
+                st.markdown(f"**Conflict Resolution:** {workflow.conflict_resolution}")
+                st.markdown(f"**Fallback Strategy:** {workflow.fallback_strategy}")
+
+                # Actions
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    if not workflow.is_primary and st.button(f"Set as Primary", key=f"primary_{workflow.id}"):
+                        # Mark this as primary, unmark others
+                        for w in st.session_state.workflows:
+                            w.is_primary = (w.id == workflow.id)
+                        st.success(f"✅ Set {workflow.name} as primary workflow")
+                        st.rerun()
+
+                with col2:
+                    if st.button(f"{'Disable' if workflow.active else 'Enable'}", key=f"toggle_{workflow.id}"):
+                        workflow.active = not workflow.active
+                        st.rerun()
+
+                with col3:
+                    if st.button(f"Delete", key=f"del_workflow_{workflow.id}", type="secondary"):
+                        st.session_state.workflows.remove(workflow)
+                        st.success(f"🗑️ Deleted {workflow.name}")
+                        st.rerun()
+
+    else:
+        st.info("No workflows configured yet. Create one from a template below.")
+
+    # Workflow Templates
+    st.markdown("### 📚 Create from Template")
+
+    template_option = st.selectbox(
+        "Select Template",
+        [
+            "Deal Registration Primary",
+            "Marketplace Only",
+            "CRM Field with Fallback",
+            "Hybrid SI + Influence (80/20)",
+            "Touchpoint Tracking Only (Default)"
+        ],
+        help="Choose a pre-configured workflow template"
+    )
+
+    # Template descriptions
+    template_descriptions = {
+        "Deal Registration Primary": "Use partner-submitted deal regs if they exist, otherwise fall back to touchpoint tracking",
+        "Marketplace Only": "100% attribution to marketplace partner for marketplace transactions",
+        "CRM Field with Fallback": "Use the CRM Partner field if populated, otherwise calculate from touchpoints",
+        "Hybrid SI + Influence (80/20)": "80% credit to deal reg partner, 20% to influence touchpoints",
+        "Touchpoint Tracking Only (Default)": "Traditional activity-based tracking (meetings, emails, etc.)"
+    }
+
+    st.info(f"ℹ️ {template_descriptions[template_option]}")
+
+    if st.button("Create Workflow from Template", type="primary"):
+        from models_new import MeasurementWorkflow, DataSourceConfig, DataSource
+        from datetime import datetime
+
+        # Generate workflow ID
+        workflow_id = len(st.session_state.workflows) + 1
+
+        # Create workflow based on template
+        if template_option == "Deal Registration Primary":
+            workflow = MeasurementWorkflow(
+                id=workflow_id,
+                company_id="demo_company",
+                name="Deal Registration Primary",
+                description="Use deal reg if exists, else touchpoint tracking",
+                data_sources=[
+                    DataSourceConfig(
+                        source_type=DataSource.DEAL_REGISTRATION,
+                        enabled=True,
+                        priority=1,
+                        requires_validation=True,
+                        config={"require_approval": True, "expiry_days": 90}
+                    ),
+                    DataSourceConfig(
+                        source_type=DataSource.TOUCHPOINT_TRACKING,
+                        enabled=True,
+                        priority=2,
+                        config={}
+                    )
+                ],
+                conflict_resolution="priority",
+                fallback_strategy="next_priority",
+                is_primary=len(st.session_state.workflows) == 0,  # First workflow is primary
+                active=True,
+                created_at=datetime.now()
+            )
+
+        elif template_option == "Marketplace Only":
+            workflow = MeasurementWorkflow(
+                id=workflow_id,
+                company_id="demo_company",
+                name="Marketplace Only",
+                description="100% attribution to marketplace partner",
+                data_sources=[
+                    DataSourceConfig(
+                        source_type=DataSource.MARKETPLACE_TRANSACTIONS,
+                        enabled=True,
+                        priority=1,
+                        config={"platform": "aws"}
+                    )
+                ],
+                conflict_resolution="priority",
+                fallback_strategy="manual",
+                applies_to={"metadata.source": "marketplace"},
+                is_primary=False,
+                active=True,
+                created_at=datetime.now()
+            )
+
+        elif template_option == "CRM Field with Fallback":
+            workflow = MeasurementWorkflow(
+                id=workflow_id,
+                company_id="demo_company",
+                name="CRM Partner Field with Fallback",
+                description="Use Partner__c if set, else calculate from touchpoints",
+                data_sources=[
+                    DataSourceConfig(
+                        source_type=DataSource.CRM_OPPORTUNITY_FIELD,
+                        enabled=True,
+                        priority=1,
+                        config={"field_name": "Partner__c", "role_field": "Partner_Role__c"}
+                    ),
+                    DataSourceConfig(
+                        source_type=DataSource.TOUCHPOINT_TRACKING,
+                        enabled=True,
+                        priority=2,
+                        config={}
+                    )
+                ],
+                conflict_resolution="priority",
+                fallback_strategy="next_priority",
+                is_primary=len(st.session_state.workflows) == 0,
+                active=True,
+                created_at=datetime.now()
+            )
+
+        elif template_option == "Hybrid SI + Influence (80/20)":
+            workflow = MeasurementWorkflow(
+                id=workflow_id,
+                company_id="demo_company",
+                name="Hybrid Deal Reg + Influence",
+                description="80% to deal reg partner, 20% to influence touchpoints",
+                data_sources=[
+                    DataSourceConfig(
+                        source_type=DataSource.DEAL_REGISTRATION,
+                        enabled=True,
+                        priority=1,
+                        config={"attribution_weight": 0.8, "require_approval": True}
+                    ),
+                    DataSourceConfig(
+                        source_type=DataSource.TOUCHPOINT_TRACKING,
+                        enabled=True,
+                        priority=2,
+                        config={"attribution_weight": 0.2}
+                    )
+                ],
+                conflict_resolution="merge",  # Combine both sources
+                fallback_strategy="next_priority",
+                is_primary=len(st.session_state.workflows) == 0,
+                active=True,
+                created_at=datetime.now()
+            )
+
+        else:  # Touchpoint Tracking Only
+            workflow = MeasurementWorkflow(
+                id=workflow_id,
+                company_id="demo_company",
+                name="Touchpoint Tracking (Default)",
+                description="Traditional activity-based tracking",
+                data_sources=[
+                    DataSourceConfig(
+                        source_type=DataSource.TOUCHPOINT_TRACKING,
+                        enabled=True,
+                        priority=1,
+                        config={}
+                    )
+                ],
+                conflict_resolution="priority",
+                fallback_strategy="equal_split",
+                is_primary=len(st.session_state.workflows) == 0,
+                active=True,
+                created_at=datetime.now()
+            )
+
+        st.session_state.workflows.append(workflow)
+        st.success(f"✅ Created workflow: {workflow.name}")
+        st.rerun()
+
+    # Data Source Upload
+    st.markdown("---")
+    st.markdown("### 📥 Upload Data from Different Sources")
+
+    upload_source_type = st.selectbox(
+        "Data Source Type",
+        [
+            "Touchpoint Tracking (CSV)",
+            "Deal Registrations (CSV)",
+            "CRM Partner Field Export (CSV)",
+            "Marketplace Transactions (JSON)"
+        ],
+        help="Select the type of data you want to upload"
+    )
+
+    if upload_source_type == "Deal Registrations (CSV)":
+        st.markdown("""
+        **Deal Registration CSV Format:**
+        - `deal_reg_id`: Unique deal registration ID
+        - `partner_id`: Partner identifier
+        - `opportunity_id`: Your internal opportunity ID
+        - `submitted_date`: When partner submitted (YYYY-MM-DD)
+        - `status`: pending/approved/rejected/expired (optional, defaults to pending)
+        - `partner_role`: Partner's role (optional, defaults to Referral)
+        """)
+
+        uploaded_file = st.file_uploader("Upload Deal Registrations CSV", type="csv", key="deal_reg_upload")
+
+        if uploaded_file:
+            if st.button("Process Deal Registrations"):
+                from data_ingestion import DataSourceIngestion
+
+                ingestion = DataSourceIngestion()
+
+                # Get primary workflow for validation rules
+                primary_workflow = next((w for w in st.session_state.workflows if w.is_primary), None)
+
+                # Create target mapping
+                target_mapping = {t.external_id: t.id for t in st.session_state.targets}
+
+                result = ingestion.ingest_deal_registrations(
+                    csv_content=uploaded_file.getvalue(),
+                    workflow=primary_workflow,
+                    target_id_mapping=target_mapping
+                )
+
+                # Add touchpoints to session state
+                st.session_state.touchpoints.extend(result["touchpoints"])
+
+                st.success(f"✅ Created {result['count']} deal registration touchpoints")
+
+                if result["warnings"]:
+                    st.warning(f"⚠️ {len(result['warnings'])} warnings:")
+                    for warning in result["warnings"][:5]:
+                        st.text(f"  • {warning}")
+
+                # Show stats
+                st.json(result["stats"])
+
+    elif upload_source_type == "CRM Partner Field Export (CSV)":
+        st.markdown("""
+        **CRM Export CSV Format:**
+        - `id`: Opportunity ID
+        - `created_date`: Opportunity created date
+        - `Partner__c`: Partner field value
+        - `Partner_Role__c`: Partner role field (optional)
+        - Other fields will be stored in metadata
+        """)
+
+        uploaded_file = st.file_uploader("Upload CRM Export CSV", type="csv", key="crm_upload")
+
+        if uploaded_file:
+            st.info("CRM partner field import coming soon!")
+
+    else:
+        st.info(f"{upload_source_type} import interface coming soon!")
+
+
+# ============================================================================
+# TAB 7: DEAL DRILLDOWN (was TAB 6)
+# ============================================================================
+
+with tabs[7]:
     st.title("💰 Deal Drilldown")
     st.caption("Detailed attribution breakdown for individual deals - perfect for partner dispute resolution")
 
@@ -2063,10 +2373,10 @@ with tabs[6]:
 
 
 # ============================================================================
-# TAB 7: LEDGER EXPLORER (was TAB 5)
+# TAB 8: LEDGER EXPLORER (was TAB 7, was TAB 5)
 # ============================================================================
 
-with tabs[7]:
+with tabs[8]:
     st.title("🔍 Attribution Ledger Explorer")
     st.caption("Immutable audit trail of all attribution calculations")
 

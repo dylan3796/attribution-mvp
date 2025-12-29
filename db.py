@@ -202,6 +202,107 @@ class Database:
         );
         """)
 
+        # ====================================================================
+        # Universal Attribution System Tables (models_new.py)
+        # ====================================================================
+
+        # Attribution targets (opportunities, consumption events, etc.)
+        self.run_sql("""
+        CREATE TABLE IF NOT EXISTS attribution_target (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            type TEXT NOT NULL,
+            external_id TEXT NOT NULL,
+            value REAL NOT NULL,
+            timestamp TEXT NOT NULL,
+            metadata TEXT,
+            created_at TEXT NOT NULL
+        );
+        """)
+
+        # Partner touchpoints (evidence of partner involvement)
+        self.run_sql("""
+        CREATE TABLE IF NOT EXISTS partner_touchpoint (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            partner_id TEXT NOT NULL,
+            target_id INTEGER NOT NULL,
+            touchpoint_type TEXT NOT NULL,
+            role TEXT NOT NULL,
+            weight REAL DEFAULT 1.0,
+            timestamp TEXT,
+            source TEXT NOT NULL DEFAULT 'touchpoint_tracking',
+            source_id TEXT,
+            source_confidence REAL DEFAULT 1.0,
+            deal_reg_status TEXT,
+            deal_reg_submitted_date TEXT,
+            deal_reg_approved_date TEXT,
+            requires_approval INTEGER DEFAULT 0,
+            approved_by TEXT,
+            approval_timestamp TEXT,
+            metadata TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (target_id) REFERENCES attribution_target(id)
+        );
+        """)
+
+        # Attribution rules (configuration for calculation)
+        self.run_sql("""
+        CREATE TABLE IF NOT EXISTS attribution_rule (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            model_type TEXT NOT NULL,
+            config TEXT NOT NULL,
+            applies_to TEXT,
+            priority INTEGER DEFAULT 100,
+            split_constraint TEXT DEFAULT 'must_sum_to_100',
+            active INTEGER DEFAULT 1,
+            created_at TEXT NOT NULL,
+            created_by TEXT
+        );
+        """)
+
+        # Ledger entries (attribution results)
+        self.run_sql("""
+        CREATE TABLE IF NOT EXISTS ledger_entry (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            target_id INTEGER NOT NULL,
+            partner_id TEXT NOT NULL,
+            attributed_value REAL NOT NULL,
+            split_percentage REAL NOT NULL,
+            rule_id INTEGER NOT NULL,
+            calculation_timestamp TEXT NOT NULL,
+            override_by TEXT,
+            audit_trail TEXT,
+            FOREIGN KEY (target_id) REFERENCES attribution_target(id),
+            FOREIGN KEY (rule_id) REFERENCES attribution_rule(id)
+        );
+        """)
+
+        # Measurement workflows (NEW - Phase 1.5)
+        self.run_sql("""
+        CREATE TABLE IF NOT EXISTS measurement_workflow (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            company_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            description TEXT,
+            data_sources TEXT NOT NULL,
+            conflict_resolution TEXT DEFAULT 'priority',
+            fallback_strategy TEXT DEFAULT 'next_priority',
+            applies_to TEXT,
+            is_primary INTEGER DEFAULT 0,
+            active INTEGER DEFAULT 1,
+            created_at TEXT NOT NULL,
+            created_by TEXT
+        );
+        """)
+
+        # Indexes for performance
+        self.run_sql("CREATE INDEX IF NOT EXISTS idx_touchpoint_target ON partner_touchpoint(target_id);")
+        self.run_sql("CREATE INDEX IF NOT EXISTS idx_touchpoint_partner ON partner_touchpoint(partner_id);")
+        self.run_sql("CREATE INDEX IF NOT EXISTS idx_touchpoint_source ON partner_touchpoint(source);")
+        self.run_sql("CREATE INDEX IF NOT EXISTS idx_ledger_target ON ledger_entry(target_id);")
+        self.run_sql("CREATE INDEX IF NOT EXISTS idx_ledger_partner ON ledger_entry(partner_id);")
+        self.run_sql("CREATE INDEX IF NOT EXISTS idx_workflow_company ON measurement_workflow(company_id);")
+
         # Apply migrations
         self._apply_migrations()
 
@@ -221,6 +322,7 @@ class Database:
                 logger.info(f"Adding column {column} to table {table}")
                 self.run_sql(f"ALTER TABLE {table} ADD COLUMN {definition};")
 
+        # Legacy system migrations
         ensure_column("use_cases", "stage", "stage TEXT")
         ensure_column("use_cases", "estimated_value", "estimated_value REAL")
         ensure_column("use_cases", "target_close_date", "target_close_date TEXT")
@@ -230,6 +332,45 @@ class Database:
 
         # Backfill tag_source if missing
         self.run_sql("UPDATE use_cases SET tag_source = 'app' WHERE tag_source IS NULL OR tag_source = '';")
+
+        # ====================================================================
+        # Universal Attribution System Migrations (Phase 1.3)
+        # ====================================================================
+
+        # Add new source tracking fields to partner_touchpoint
+        ensure_column("partner_touchpoint", "source", "source TEXT NOT NULL DEFAULT 'touchpoint_tracking'")
+        ensure_column("partner_touchpoint", "source_id", "source_id TEXT")
+        ensure_column("partner_touchpoint", "source_confidence", "source_confidence REAL DEFAULT 1.0")
+
+        # Add deal registration fields
+        ensure_column("partner_touchpoint", "deal_reg_status", "deal_reg_status TEXT")
+        ensure_column("partner_touchpoint", "deal_reg_submitted_date", "deal_reg_submitted_date TEXT")
+        ensure_column("partner_touchpoint", "deal_reg_approved_date", "deal_reg_approved_date TEXT")
+
+        # Add approval workflow fields
+        ensure_column("partner_touchpoint", "requires_approval", "requires_approval INTEGER DEFAULT 0")
+        ensure_column("partner_touchpoint", "approved_by", "approved_by TEXT")
+        ensure_column("partner_touchpoint", "approval_timestamp", "approval_timestamp TEXT")
+
+        # Backfill source field for existing touchpoints (backward compatibility)
+        try:
+            # Check if partner_touchpoint table exists and has records
+            existing_touchpoints = self.read_sql("SELECT COUNT(*) as count FROM partner_touchpoint WHERE source IS NULL OR source = '';")
+            if not existing_touchpoints.empty and existing_touchpoints.loc[0, "count"] > 0:
+                logger.info("Backfilling source field for existing partner touchpoints")
+                self.run_sql("""
+                    UPDATE partner_touchpoint
+                    SET source = CASE
+                        WHEN touchpoint_type = 'manual_override' THEN 'manual_override'
+                        ELSE 'touchpoint_tracking'
+                    END
+                    WHERE source IS NULL OR source = '';
+                """)
+                # Set default source_confidence for existing records
+                self.run_sql("UPDATE partner_touchpoint SET source_confidence = 1.0 WHERE source_confidence IS NULL;")
+        except Exception as e:
+            # Table might not exist yet (fresh install)
+            logger.debug(f"Skipping partner_touchpoint backfill: {e}")
 
     def _migrate_legacy_rules(self) -> None:
         """Migrate old rule_engine_rules key to account_rules."""

@@ -13,7 +13,7 @@ That's the caller's responsibility (separation of concerns).
 """
 
 import math
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
 from models_new import (
     AttributionTarget,
@@ -22,6 +22,9 @@ from models_new import (
     LedgerEntry,
     AttributionModel,
     SplitConstraint,
+    DataSource,
+    DataSourceConfig,
+    MeasurementWorkflow,
     validate_touchpoint_for_model
 )
 
@@ -88,6 +91,322 @@ class AttributionEngine:
         )
 
         return ledger_entries
+
+    # ========================================================================
+    # Multi-Source Workflow Calculation (Phase 2)
+    # ========================================================================
+
+    def calculate_with_workflow(
+        self,
+        target: AttributionTarget,
+        touchpoints: List[PartnerTouchpoint],
+        rule: AttributionRule,
+        workflow: MeasurementWorkflow,
+        override_by: Optional[str] = None
+    ) -> List[LedgerEntry]:
+        """
+        Calculate attribution using a measurement workflow.
+
+        This is the NEW entry point for flexible multi-source attribution.
+        It allows companies to configure exactly how they want to measure
+        partner impact by:
+        1. Grouping touchpoints by data source
+        2. Applying workflow priority/conflict resolution logic
+        3. Selecting the right touchpoints based on workflow config
+        4. Calculating attribution using existing models
+        5. Generating ledger with source attribution trail
+
+        Args:
+            target: What's being attributed (opportunity, consumption event, etc.)
+            touchpoints: ALL touchpoints from ALL sources
+            rule: Attribution calculation rule (role-weighted, time-decay, etc.)
+            workflow: Measurement workflow configuration
+            override_by: User who manually triggered this (if applicable)
+
+        Returns:
+            List of LedgerEntry objects (one per partner getting credit)
+
+        Example workflows:
+        - Priority: Use deal reg if exists, else touchpoints
+        - Merge: 80% deal reg + 20% influence touchpoints
+        - Manual: Flag for human review when sources conflict
+        """
+
+        # Step 1: Group touchpoints by data source
+        touchpoints_by_source = self._group_by_source(touchpoints)
+
+        # Step 2: Apply workflow logic to select which touchpoints to use
+        selected_touchpoints = self._apply_workflow_logic(
+            touchpoints_by_source,
+            workflow,
+            target
+        )
+
+        if not selected_touchpoints:
+            # No data from primary sources - try fallback strategy
+            selected_touchpoints = self._apply_fallback_strategy(
+                touchpoints_by_source,
+                workflow,
+                target
+            )
+
+        if not selected_touchpoints:
+            # No partner data available from any source
+            return []
+
+        # Step 3: Use existing calculate() method for attribution calculation
+        # This reuses all the existing model logic (role-weighted, time-decay, etc.)
+        return self.calculate(target, selected_touchpoints, rule, override_by)
+
+    def _group_by_source(
+        self,
+        touchpoints: List[PartnerTouchpoint]
+    ) -> Dict[DataSource, List[PartnerTouchpoint]]:
+        """
+        Group touchpoints by their data source.
+
+        Returns:
+            {
+                DataSource.DEAL_REGISTRATION: [tp1, tp2],
+                DataSource.TOUCHPOINT_TRACKING: [tp3, tp4, tp5],
+                DataSource.MARKETPLACE_TRANSACTIONS: [tp6]
+            }
+        """
+        grouped = {}
+        for tp in touchpoints:
+            source = tp.source
+            if source not in grouped:
+                grouped[source] = []
+            grouped[source].append(tp)
+
+        return grouped
+
+    def _apply_workflow_logic(
+        self,
+        touchpoints_by_source: Dict[DataSource, List[PartnerTouchpoint]],
+        workflow: MeasurementWorkflow,
+        target: AttributionTarget
+    ) -> List[PartnerTouchpoint]:
+        """
+        Apply workflow configuration to select touchpoints.
+
+        Workflow conflict resolution strategies:
+        - "priority": Use highest priority source that has data
+        - "merge": Weighted combination of multiple sources
+        - "manual_review": Return empty (flag for human decision)
+        """
+
+        conflict_resolution = workflow.conflict_resolution
+
+        if conflict_resolution == "priority":
+            return self._priority_selection(touchpoints_by_source, workflow)
+
+        elif conflict_resolution == "merge":
+            return self._merge_sources(touchpoints_by_source, workflow)
+
+        elif conflict_resolution == "manual_review":
+            # Flag for manual review - return empty so caller can handle
+            return []
+
+        else:
+            # Default to priority if unknown strategy
+            return self._priority_selection(touchpoints_by_source, workflow)
+
+    def _priority_selection(
+        self,
+        touchpoints_by_source: Dict[DataSource, List[PartnerTouchpoint]],
+        workflow: MeasurementWorkflow
+    ) -> List[PartnerTouchpoint]:
+        """
+        Select touchpoints from highest priority source that has data.
+
+        Example workflow:
+        - Priority 1: Deal Registration (if exists, use this)
+        - Priority 2: CRM Partner Field (else use this)
+        - Priority 3: Touchpoint Tracking (fallback to this)
+
+        Returns touchpoints from the first enabled source (by priority) that has data.
+        """
+
+        # Sort data sources by priority (lower number = higher priority)
+        sorted_sources = sorted(
+            workflow.data_sources,
+            key=lambda ds: ds.priority
+        )
+
+        for source_config in sorted_sources:
+            # Skip disabled sources
+            if not source_config.enabled:
+                continue
+
+            # Check if we have data from this source
+            if source_config.source_type in touchpoints_by_source:
+                touchpoints = touchpoints_by_source[source_config.source_type]
+
+                # Apply source-specific filters
+                filtered = self._apply_source_filters(touchpoints, source_config)
+
+                if filtered:
+                    # Found data from this source - use it!
+                    return filtered
+
+        # No data from any configured source
+        return []
+
+    def _merge_sources(
+        self,
+        touchpoints_by_source: Dict[DataSource, List[PartnerTouchpoint]],
+        workflow: MeasurementWorkflow
+    ) -> List[PartnerTouchpoint]:
+        """
+        Combine touchpoints from multiple sources with weighting.
+
+        Example: "80% to deal reg partner, 20% to influence touchpoints"
+        - Deal reg touchpoint gets weight multiplier of 0.8
+        - Influence touchpoints get weight multiplier of 0.2
+
+        The attribution engine will then use these weighted touchpoints
+        to calculate splits (e.g., via activity-weighted model).
+        """
+
+        merged_touchpoints = []
+
+        for source_config in workflow.data_sources:
+            # Skip disabled sources
+            if not source_config.enabled:
+                continue
+
+            # Check if we have data from this source
+            if source_config.source_type not in touchpoints_by_source:
+                continue
+
+            touchpoints = touchpoints_by_source[source_config.source_type]
+
+            # Apply source-specific filters
+            filtered = self._apply_source_filters(touchpoints, source_config)
+
+            # Apply attribution weight from config
+            weight_multiplier = source_config.config.get("attribution_weight", 1.0)
+
+            for tp in filtered:
+                # Create weighted copy of touchpoint
+                weighted_tp = PartnerTouchpoint(
+                    id=tp.id,
+                    partner_id=tp.partner_id,
+                    target_id=tp.target_id,
+                    touchpoint_type=tp.touchpoint_type,
+                    role=tp.role,
+                    weight=tp.weight * weight_multiplier,  # Apply weight multiplier
+                    timestamp=tp.timestamp,
+                    source=tp.source,
+                    source_id=tp.source_id,
+                    source_confidence=tp.source_confidence,
+                    deal_reg_status=tp.deal_reg_status,
+                    deal_reg_submitted_date=tp.deal_reg_submitted_date,
+                    deal_reg_approved_date=tp.deal_reg_approved_date,
+                    requires_approval=tp.requires_approval,
+                    approved_by=tp.approved_by,
+                    approval_timestamp=tp.approval_timestamp,
+                    metadata=tp.metadata,
+                    created_at=tp.created_at
+                )
+                merged_touchpoints.append(weighted_tp)
+
+        return merged_touchpoints
+
+    def _apply_fallback_strategy(
+        self,
+        touchpoints_by_source: Dict[DataSource, List[PartnerTouchpoint]],
+        workflow: MeasurementWorkflow,
+        target: AttributionTarget
+    ) -> List[PartnerTouchpoint]:
+        """
+        Apply fallback strategy when primary workflow has no data.
+
+        Strategies:
+        - "next_priority": Try lower priority sources (already handled by priority_selection)
+        - "equal_split": Use all available touchpoints with equal weight
+        - "manual": Return empty (flag for human review)
+        """
+
+        fallback_strategy = workflow.fallback_strategy
+
+        if fallback_strategy == "next_priority":
+            # Priority selection already handles this - no additional fallback needed
+            return []
+
+        elif fallback_strategy == "equal_split":
+            # Combine all touchpoints from all sources with equal weight
+            all_touchpoints = []
+            for touchpoints in touchpoints_by_source.values():
+                all_touchpoints.extend(touchpoints)
+            return all_touchpoints
+
+        elif fallback_strategy == "manual":
+            # Flag for manual review
+            return []
+
+        else:
+            # Default: return empty
+            return []
+
+    def _apply_source_filters(
+        self,
+        touchpoints: List[PartnerTouchpoint],
+        source_config: DataSourceConfig
+    ) -> List[PartnerTouchpoint]:
+        """
+        Apply source-specific filters from DataSourceConfig.
+
+        Example filters:
+        - Deal Reg: {"require_approval": True, "expiry_days": 90}
+          → Only approved deal regs from last 90 days
+        - CRM Field: {"field_name": "Partner__c"}
+          → Filter by specific CRM field
+        - Touchpoints: {"min_activity_count": 3}
+          → Only partners with 3+ activities
+        """
+        filtered = touchpoints
+
+        config = source_config.config
+
+        # Filter by approval requirement
+        if config.get("require_approval", False):
+            filtered = [
+                tp for tp in filtered
+                if tp.approved_by is not None or not tp.requires_approval
+            ]
+
+        # Filter by deal reg status
+        if "required_deal_reg_status" in config:
+            required_status = config["required_deal_reg_status"]
+            filtered = [
+                tp for tp in filtered
+                if tp.deal_reg_status == required_status
+            ]
+
+        # Filter by expiry (for deal registrations)
+        if "expiry_days" in config:
+            expiry_days = config["expiry_days"]
+            cutoff_date = datetime.now() - timedelta(days=expiry_days)
+            filtered = [
+                tp for tp in filtered
+                if tp.timestamp and tp.timestamp >= cutoff_date
+            ]
+
+        # Filter by minimum activity count
+        if "min_activity_count" in config:
+            min_count = config["min_activity_count"]
+            filtered = [tp for tp in filtered if tp.weight >= min_count]
+
+        # Validation requirement
+        if source_config.requires_validation:
+            filtered = [
+                tp for tp in filtered
+                if tp.approved_by is not None
+            ]
+
+        return filtered
 
     def _filter_touchpoints(
         self,

@@ -39,12 +39,38 @@ class TargetType(str, Enum):
 
 class TouchpointType(str, Enum):
     """How partner involvement is evidenced"""
+    # Existing types (backward compatible)
     TAGGED = "tagged"                    # Partner tagged in CRM
     CONTACT_ROLE = "contact_role"        # OpportunityContactRole
     ACTIVITY = "activity"                # Meetings, emails, calls
     REFERRAL = "referral"                # Explicit referral
     MANUAL_OVERRIDE = "manual_override"  # AE manually assigned
     CONSUMPTION_TAG = "consumption_tag"  # Usage data tagged with partner
+
+    # NEW: Additional data source types for flexible measurement
+    DEAL_REGISTRATION = "deal_registration"         # Partner-submitted deal reg
+    CRM_PARTNER_FIELD = "crm_partner_field"        # Single partner field on opportunity
+    MARKETPLACE_TRANSACTION = "marketplace"         # AWS/Azure/GCP marketplace sale
+    PARTNER_SELF_REPORTED = "partner_self_reported" # Partner-reported influence
+    INTEGRATION_TAG = "integration_tag"             # From integration (Slack, Jira, etc)
+    SOURCED_BY = "sourced_by"                       # Opportunity source field
+
+
+class DataSource(str, Enum):
+    """
+    Available measurement data sources.
+
+    These define the different systems/methods companies use to track
+    partner involvement. Each source has different reliability and
+    requires different validation logic.
+    """
+    DEAL_REGISTRATION = "deal_registration"           # Partner-submitted deal registration
+    CRM_OPPORTUNITY_FIELD = "crm_opportunity_field"   # Single partner field in CRM
+    TOUCHPOINT_TRACKING = "touchpoint_tracking"       # Activity-based tracking
+    MARKETPLACE_TRANSACTIONS = "marketplace_transactions" # AWS/Azure/GCP marketplace
+    PARTNER_PORTAL_REPORTING = "partner_portal_reporting" # Partner self-reported
+    ACTIVITY_TRACKING = "activity_tracking"           # Meetings, emails, calls
+    MANUAL_OVERRIDE = "manual_override"               # Manual assignment by user
 
 
 class AttributionModel(str, Enum):
@@ -127,6 +153,11 @@ class PartnerTouchpoint:
 
     Multiple touchpoints per target are common (e.g., SI + Influencer).
     Touchpoints can have different types, roles, weights, and timestamps.
+
+    Enhanced with multi-source measurement support:
+    - Tracks which data source created the touchpoint
+    - Supports deal registration workflow
+    - Enables approval processes for partner-submitted data
     """
     id: int
     partner_id: str                     # Reference to partner (external system or internal ID)
@@ -135,6 +166,22 @@ class PartnerTouchpoint:
     role: str                           # Partner's role (SI, Influencer, etc.)
     weight: float = 1.0                 # For activity-weighted (# of meetings, etc.)
     timestamp: Optional[datetime] = None  # When partner touched the deal (for time-decay)
+
+    # NEW: Data source tracking (Phase 1.3)
+    source: DataSource = DataSource.TOUCHPOINT_TRACKING  # Which system created this touchpoint
+    source_id: Optional[str] = None          # External ID in source system (e.g., deal reg ID)
+    source_confidence: float = 1.0           # Confidence score (0-1) for data quality
+
+    # NEW: Deal registration fields (Phase 1.3)
+    deal_reg_status: Optional[str] = None    # pending/approved/rejected/expired
+    deal_reg_submitted_date: Optional[datetime] = None
+    deal_reg_approved_date: Optional[datetime] = None
+
+    # NEW: Approval workflow (Phase 1.3)
+    requires_approval: bool = False          # Does this touchpoint need manual approval?
+    approved_by: Optional[str] = None        # User who approved (if applicable)
+    approval_timestamp: Optional[datetime] = None
+
     metadata: Dict[str, Any] = field(default_factory=dict)  # Context (meeting notes, etc.)
     created_at: datetime = field(default_factory=datetime.now)
 
@@ -147,8 +194,116 @@ class PartnerTouchpoint:
             "role": self.role,
             "weight": self.weight,
             "timestamp": self.timestamp.isoformat() if self.timestamp else None,
+            # New source tracking fields
+            "source": self.source.value,
+            "source_id": self.source_id,
+            "source_confidence": self.source_confidence,
+            # Deal registration fields
+            "deal_reg_status": self.deal_reg_status,
+            "deal_reg_submitted_date": self.deal_reg_submitted_date.isoformat() if self.deal_reg_submitted_date else None,
+            "deal_reg_approved_date": self.deal_reg_approved_date.isoformat() if self.deal_reg_approved_date else None,
+            # Approval workflow fields
+            "requires_approval": self.requires_approval,
+            "approved_by": self.approved_by,
+            "approval_timestamp": self.approval_timestamp.isoformat() if self.approval_timestamp else None,
+            # Existing fields
             "metadata": json.dumps(self.metadata),
             "created_at": self.created_at.isoformat()
+        }
+
+
+@dataclass
+class DataSourceConfig:
+    """
+    Configuration for a data source type within a measurement workflow.
+
+    Defines how a specific data source should be used for attribution:
+    - Priority for source selection (lower number = higher priority)
+    - Whether to auto-create touchpoints from this source
+    - Validation requirements
+    - Source-specific configuration
+
+    Example configs:
+    - Deal Registration: {"require_approval": True, "expiry_days": 90}
+    - CRM Field: {"field_name": "Partner__c", "role_field": "Partner_Role__c"}
+    - Marketplace: {"platform": "aws", "attribution_percentage": 1.0}
+    - Touchpoints: {"min_activity_count": 3, "role_weights": {...}}
+    """
+    source_type: DataSource
+    enabled: bool = True
+    priority: int = 100                      # Lower = higher priority (1 beats 100)
+    auto_create_touchpoints: bool = True     # Auto-create touchpoints from this source
+    requires_validation: bool = False        # Require manual approval before attribution
+    config: Dict[str, Any] = field(default_factory=dict)  # Source-specific settings
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "source_type": self.source_type.value,
+            "enabled": self.enabled,
+            "priority": self.priority,
+            "auto_create_touchpoints": self.auto_create_touchpoints,
+            "requires_validation": self.requires_validation,
+            "config": json.dumps(self.config)
+        }
+
+
+@dataclass
+class MeasurementWorkflow:
+    """
+    Defines HOW a company measures partner contribution.
+
+    This is the key to platform flexibility - instead of hardcoding measurement
+    methodologies, each company configures their own workflow that specifies:
+    - Which data sources to use (deal reg, CRM fields, touchpoints, etc.)
+    - Priority ordering (which source wins if multiple have data)
+    - Conflict resolution (priority-based, merge/weighted, manual review)
+    - Fallback strategy (what to do if primary source has no data)
+    - Deal type scoping (different workflows for different deal segments)
+
+    Example Workflows:
+    - "Deal Reg Primary": Use deal reg if exists, else touchpoints (priority)
+    - "Marketplace Only": 100% to marketplace partner for marketplace deals
+    - "Hybrid SI+Influence": 80% deal reg + 20% influence touchpoints (merge)
+    - "CRM with Fallback": Use Partner__c field if set, else calculate from activities
+    """
+    id: int
+    company_id: str                     # Which organization owns this workflow
+    name: str
+    description: str
+
+    # Which data sources and their priority
+    data_sources: List[DataSourceConfig] = field(default_factory=list)
+
+    # Conflict resolution strategy when multiple sources have data
+    conflict_resolution: str = "priority"    # priority/merge/manual_review
+
+    # Fallback logic when primary source has no data
+    fallback_strategy: str = "next_priority" # next_priority/equal_split/manual
+
+    # Deal type scoping (filters to determine when this workflow applies)
+    applies_to: Dict[str, Any] = field(default_factory=dict)
+
+    # Is this the primary methodology for reporting/payouts?
+    is_primary: bool = False
+
+    active: bool = True
+    created_at: datetime = field(default_factory=datetime.now)
+    created_by: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "company_id": self.company_id,
+            "name": self.name,
+            "description": self.description,
+            "data_sources": json.dumps([ds.to_dict() for ds in self.data_sources]),
+            "conflict_resolution": self.conflict_resolution,
+            "fallback_strategy": self.fallback_strategy,
+            "applies_to": json.dumps(self.applies_to),
+            "is_primary": self.is_primary,
+            "active": self.active,
+            "created_at": self.created_at.isoformat(),
+            "created_by": self.created_by
         }
 
 

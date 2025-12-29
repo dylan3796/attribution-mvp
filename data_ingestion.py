@@ -562,3 +562,277 @@ T001,100000,2025-01-15,Partner A,Implementation (SI)
 T002,50000,2025-01-20,Partner B,Influence
 T003,75000,2025-01-25,Partner A,Implementation (SI)
 """
+
+
+# ============================================================================
+# Multi-Source Data Ingestion (Phase 3)
+# ============================================================================
+
+class DataSourceIngestion:
+    """
+    Ingest partner data from specific source types with proper source tracking.
+
+    This class handles the conversion of source-specific data formats
+    into PartnerTouchpoint objects with correct DataSource attribution.
+
+    Supports:
+    - Deal registrations (partner-submitted)
+    - Marketplace transactions (AWS/Azure/GCP)
+    - CRM partner fields (Salesforce Partner__c, etc.)
+    - Partner self-reported activities
+    - Integration tags (Slack, Jira, etc.)
+    """
+
+    def __init__(self):
+        """Initialize data source ingestion handler."""
+        # Import here to avoid circular dependency
+        from models_new import DataSource, MeasurementWorkflow
+        self.DataSource = DataSource
+        self.MeasurementWorkflow = MeasurementWorkflow
+
+    def ingest_deal_registrations(
+        self,
+        csv_content: bytes,
+        workflow: Optional[Any] = None,
+        target_id_mapping: Optional[Dict[str, int]] = None
+    ) -> Dict[str, Any]:
+        """
+        Ingest partner-submitted deal registrations from CSV.
+
+        CSV Schema (required columns):
+        - deal_reg_id: Unique deal registration ID
+        - partner_id: Partner identifier
+        - opportunity_id: External opportunity ID
+        - submitted_date: When partner submitted the deal reg
+
+        Optional columns:
+        - partner_role: Partner's role (defaults to "Referral")
+        - status: pending/approved/rejected/expired (defaults to "pending")
+        - approved_by: User who approved
+        - approval_date: When approved
+
+        Args:
+            csv_content: CSV file content as bytes
+            workflow: Optional MeasurementWorkflow for validation rules
+            target_id_mapping: Optional dict mapping external_id → target_id
+
+        Returns:
+            {
+                "touchpoints": List[PartnerTouchpoint],
+                "count": int,
+                "warnings": List[str],
+                "stats": {...}
+            }
+        """
+        from models_new import DataSource
+
+        try:
+            # Parse CSV
+            df = pd.read_csv(io.BytesIO(csv_content))
+
+            # Validate required columns
+            required_cols = ["deal_reg_id", "partner_id", "opportunity_id", "submitted_date"]
+            missing_cols = [col for col in required_cols if col not in df.columns]
+            if missing_cols:
+                raise ValueError(f"Missing required columns: {missing_cols}")
+
+            touchpoints = []
+            warnings = []
+            stats = {
+                "total_rows": len(df),
+                "touchpoints_created": 0,
+                "skipped_rows": 0,
+                "by_status": {}
+            }
+
+            # Get validation config from workflow
+            require_approval = False
+            if workflow and hasattr(workflow, 'data_sources'):
+                deal_reg_config = next(
+                    (ds for ds in workflow.data_sources
+                     if ds.source_type == DataSource.DEAL_REGISTRATION),
+                    None
+                )
+                if deal_reg_config:
+                    require_approval = deal_reg_config.config.get("require_approval", False)
+
+            for idx, row in df.iterrows():
+                try:
+                    # Parse submitted date
+                    submitted_date = pd.to_datetime(row["submitted_date"])
+
+                    # Determine target_id
+                    target_id = 0  # Placeholder (will be resolved by caller)
+                    if target_id_mapping and row["opportunity_id"] in target_id_mapping:
+                        target_id = target_id_mapping[row["opportunity_id"]]
+
+                    # Get status (default to pending)
+                    status = row.get("status", "pending")
+                    stats["by_status"][status] = stats["by_status"].get(status, 0) + 1
+
+                    # Create touchpoint
+                    touchpoint = PartnerTouchpoint(
+                        id=0,  # Will be assigned by database
+                        partner_id=str(row["partner_id"]),
+                        target_id=target_id,
+                        touchpoint_type=TouchpointType.DEAL_REGISTRATION,
+                        role=row.get("partner_role", "Referral"),
+                        weight=1.0,
+                        timestamp=submitted_date,
+
+                        # Source tracking (Phase 1.3)
+                        source=DataSource.DEAL_REGISTRATION,
+                        source_id=str(row["deal_reg_id"]),
+                        source_confidence=1.0,  # Deal reg is definitive
+
+                        # Deal registration fields
+                        deal_reg_status=status,
+                        deal_reg_submitted_date=submitted_date,
+                        deal_reg_approved_date=pd.to_datetime(row["approval_date"]) if "approval_date" in row and pd.notna(row["approval_date"]) else None,
+
+                        # Approval workflow
+                        requires_approval=require_approval,
+                        approved_by=row.get("approved_by") if "approved_by" in row else None,
+                        approval_timestamp=pd.to_datetime(row["approval_date"]) if "approval_date" in row and pd.notna(row["approval_date"]) else None,
+
+                        # Metadata
+                        metadata={
+                            "opportunity_id": row["opportunity_id"],
+                            "estimated_value": float(row["estimated_value"]) if "estimated_value" in row and pd.notna(row["estimated_value"]) else None,
+                            "notes": row.get("notes")
+                        },
+                        created_at=datetime.now()
+                    )
+
+                    touchpoints.append(touchpoint)
+                    stats["touchpoints_created"] += 1
+
+                except Exception as e:
+                    warnings.append(f"Row {idx + 1}: {str(e)}")
+                    stats["skipped_rows"] += 1
+
+            return {
+                "touchpoints": touchpoints,
+                "count": len(touchpoints),
+                "warnings": warnings,
+                "stats": stats
+            }
+
+        except Exception as e:
+            raise ValueError(f"Error ingesting deal registrations: {e}")
+
+    def ingest_crm_partner_field(
+        self,
+        opportunities: List[Dict[str, Any]],
+        field_config: Dict[str, str],
+        target_id_mapping: Optional[Dict[str, int]] = None
+    ) -> Dict[str, Any]:
+        """
+        Ingest from single CRM partner field (e.g., Salesforce Partner__c).
+
+        Opportunity schema (dict keys):
+        - id: Opportunity external ID
+        - created_date: When opportunity was created
+        - [field_config["field_name"]]: Partner value
+
+        Field config:
+        - field_name: Name of partner field (e.g., "Partner__c")
+        - role_field: Optional name of role field (e.g., "Partner_Role__c")
+
+        Args:
+            opportunities: List of opportunity dicts
+            field_config: {"field_name": "Partner__c", "role_field": "Partner_Role__c"}
+            target_id_mapping: Optional dict mapping external_id → target_id
+
+        Returns:
+            {
+                "touchpoints": List[PartnerTouchpoint],
+                "count": int,
+                "warnings": List[str],
+                "stats": {...}
+            }
+        """
+        from models_new import DataSource
+
+        touchpoints = []
+        warnings = []
+        stats = {
+            "total_opps": len(opportunities),
+            "with_partner": 0,
+            "without_partner": 0
+        }
+
+        partner_field = field_config.get("field_name", "Partner__c")
+        role_field = field_config.get("role_field")
+
+        for idx, opp in enumerate(opportunities):
+            try:
+                # Check if partner field is populated
+                if partner_field not in opp or not opp[partner_field]:
+                    stats["without_partner"] += 1
+                    continue  # No partner tagged
+
+                stats["with_partner"] += 1
+
+                # Parse created date
+                created_date = pd.to_datetime(opp.get("created_date", datetime.now()))
+
+                # Determine target_id
+                target_id = 0  # Placeholder
+                if target_id_mapping and "id" in opp:
+                    target_id = target_id_mapping.get(opp["id"], 0)
+
+                # Get partner role
+                role = "Unknown"
+                if role_field and role_field in opp and opp[role_field]:
+                    role = opp[role_field]
+
+                # Create touchpoint
+                touchpoint = PartnerTouchpoint(
+                    id=0,
+                    partner_id=str(opp[partner_field]),
+                    target_id=target_id,
+                    touchpoint_type=TouchpointType.CRM_PARTNER_FIELD,
+                    role=role,
+                    weight=1.0,
+                    timestamp=created_date,
+
+                    # Source tracking
+                    source=DataSource.CRM_OPPORTUNITY_FIELD,
+                    source_id=opp.get("id"),
+                    source_confidence=1.0,  # CRM field is definitive
+
+                    # Metadata
+                    metadata={
+                        "crm_field": partner_field,
+                        "opportunity_id": opp.get("id"),
+                        "opportunity_name": opp.get("name"),
+                        "stage": opp.get("stage"),
+                        "amount": opp.get("amount")
+                    },
+                    created_at=datetime.now()
+                )
+
+                touchpoints.append(touchpoint)
+
+            except Exception as e:
+                warnings.append(f"Opportunity {idx}: {str(e)}")
+
+        return {
+            "touchpoints": touchpoints,
+            "count": len(touchpoints),
+            "warnings": warnings,
+            "stats": stats
+        }
+
+    def create_target_id_mapping(self, targets: List[Any]) -> Dict[str, int]:
+        """
+        Create a mapping from external_id to target_id for fast lookups.
+
+        Args:
+            targets: List of AttributionTarget objects
+
+        Returns:
+            Dict mapping external_id → target_id
+        """
+        return {target.external_id: target.id for target in targets}
