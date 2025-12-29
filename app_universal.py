@@ -47,6 +47,23 @@ from dashboards import (
 from exports import export_to_csv, export_to_excel, generate_pdf_report, generate_partner_statement_pdf, generate_bulk_partner_statements
 from pdf_executive_report import generate_executive_report
 
+# Partner management dashboards
+from partner_analytics import (
+    calculate_health_score, calculate_period_comparison, detect_alerts,
+    calculate_win_rate, calculate_deal_velocity, generate_partner_insights,
+    get_top_movers
+)
+from dashboards_partner import (
+    create_health_gauge, create_health_score_breakdown,
+    create_period_comparison_chart, create_top_movers_chart,
+    create_partner_revenue_trend, create_partner_activity_trend
+)
+from utils_partner import (
+    format_days_ago, format_growth_percentage, format_currency_compact,
+    get_trend_indicator, classify_health_grade, get_health_emoji,
+    get_grade_description, format_percentage
+)
+
 # ============================================================================
 # Page Configuration
 # ============================================================================
@@ -248,7 +265,9 @@ with st.sidebar:
 
 # Main tabs
 tabs = st.tabs([
-    "📊 Dashboard",
+    "📊 Executive Dashboard",
+    "💼 Partner Sales",
+    "🤝 Partner Management",
     "📥 Data Import",
     "⚙️ Rule Builder",
     "📋 Rules & Templates",
@@ -407,10 +426,11 @@ with tabs[0]:
         attribution_coverage = (total_attributed / total_revenue * 100) if total_revenue > 0 else 0.0
 
         with metric_cols[0]:
+            period_days = (end_date - start_date).days + 1
             st.metric(
                 "Total Revenue",
                 f"${total_revenue:,.0f}",
-                delta=f"{dashboard_days}d period",
+                delta=f"{period_days}d period",
                 help="Sum of all closed opportunity/deal values in the selected time period"
             )
 
@@ -688,10 +708,566 @@ with tabs[0]:
 
 
 # ============================================================================
-# TAB 1: DATA IMPORT (NEW)
+# TAB 1: PARTNER SALES DASHBOARD (NEW)
 # ============================================================================
 
 with tabs[1]:
+    st.title("💼 Partner Sales Dashboard")
+    st.caption("Track revenue growth, performance trends, and actionable insights for partner sales managers")
+
+    # Date Range Selector with Comparison Toggle
+    col1, col2, col3 = st.columns([2, 2, 1])
+
+    with col1:
+        period_type = st.selectbox(
+            "Period Type",
+            ["Quick Range", "Month", "Quarter"],
+            key="sales_period_type",
+            help="Select reporting period"
+        )
+
+    with col2:
+        if period_type == "Quick Range":
+            days = st.selectbox(
+                "Time Range",
+                [7, 30, 60, 90],
+                index=1,
+                format_func=lambda x: f"Last {x} days",
+                key="sales_days"
+            )
+            end_date = date.today()
+            start_date = end_date - timedelta(days=days)
+        elif period_type == "Month":
+            months = []
+            today = date.today()
+            for i in range(6):
+                month_date = today.replace(day=1) - timedelta(days=i*30)
+                months.append((month_date.strftime("%B %Y"), month_date.year, month_date.month))
+
+            selected_month = st.selectbox(
+                "Select Month",
+                [m[0] for m in months],
+                key="sales_month"
+            )
+
+            year, month = next((m[1], m[2]) for m in months if m[0] == selected_month)
+            start_date = date(year, month, 1)
+            last_day = calendar.monthrange(year, month)[1]
+            end_date = date(year, month, last_day)
+        else:  # Quarter
+            quarters = []
+            today = date.today()
+            current_quarter = (today.month - 1) // 3 + 1
+            current_year = today.year
+
+            for i in range(4):
+                q = current_quarter - i
+                y = current_year
+                while q <= 0:
+                    q += 4
+                    y -= 1
+                quarters.append((f"Q{q} {y}", y, q))
+
+            selected_quarter = st.selectbox(
+                "Select Quarter",
+                [q[0] for q in quarters],
+                key="sales_quarter"
+            )
+
+            year, quarter = next((q[1], q[2]) for q in quarters if q[0] == selected_quarter)
+            start_month = (quarter - 1) * 3 + 1
+            start_date = date(year, start_month, 1)
+            end_month = start_month + 2
+            last_day = calendar.monthrange(year, end_month)[1]
+            end_date = date(year, end_month, last_day)
+
+    with col3:
+        compare_enabled = st.checkbox(
+            "Compare",
+            value=True,
+            key="sales_compare",
+            help="Compare to previous period"
+        )
+
+    # Calculate previous period dates if comparison enabled
+    if compare_enabled:
+        period_days = (end_date - start_date).days + 1
+        previous_end = start_date - timedelta(days=1)
+        previous_start = previous_end - timedelta(days=period_days - 1)
+    else:
+        previous_start = previous_end = None
+
+    st.markdown("---")
+
+    # Get data
+    if st.session_state.targets and st.session_state.ledger:
+        # Calculate period comparison
+        if compare_enabled and previous_start and previous_end:
+            try:
+                comparison = calculate_period_comparison(
+                    st.session_state.ledger,
+                    st.session_state.targets,
+                    start_date,
+                    end_date,
+                    previous_start,
+                    previous_end
+                )
+            except Exception as e:
+                st.error(f"Error calculating period comparison: {str(e)}")
+                comparison = None
+        else:
+            comparison = None
+
+        # Key Metrics Row
+        st.markdown("### Key Metrics")
+        metric_cols = st.columns(4)
+
+        # Calculate current period metrics
+        current_ledger = [
+            e for e in st.session_state.ledger
+            if start_date <= e.calculation_timestamp.date() <= end_date
+        ]
+        current_revenue = sum(e.attributed_value for e in current_ledger)
+        current_deals = len(set(e.target_id for e in current_ledger))
+
+        current_targets = [
+            t for t in st.session_state.targets
+            if start_date <= t.timestamp.date() <= end_date
+            and t.metadata.get('is_closed', False)
+        ]
+        total_revenue = sum(t.value for t in current_targets)
+        coverage = (current_revenue / total_revenue * 100) if total_revenue > 0 else 0
+
+        with metric_cols[0]:
+            if comparison:
+                delta = format_growth_percentage(comparison.growth_percentage / 100)
+                st.metric("Attributed Revenue", format_currency_compact(current_revenue), delta=delta)
+            else:
+                st.metric("Attributed Revenue", format_currency_compact(current_revenue))
+
+        with metric_cols[1]:
+            if comparison:
+                delta = format_growth_percentage(comparison.deal_growth_percentage / 100)
+                st.metric("Deals", str(current_deals), delta=delta)
+            else:
+                st.metric("Deals", str(current_deals))
+
+        with metric_cols[2]:
+            if comparison:
+                coverage_delta = comparison.current_coverage - comparison.previous_coverage
+                delta_str = f"{coverage_delta:+.1f}%"
+                st.metric("Coverage", f"{coverage:.1f}%", delta=delta_str)
+            else:
+                st.metric("Coverage", f"{coverage:.1f}%")
+
+        with metric_cols[3]:
+            unique_partners = len(set(e.partner_id for e in current_ledger))
+            st.metric("Active Partners", str(unique_partners))
+
+        st.markdown("---")
+
+        # Alerts & Insights Section
+        st.markdown("### 🚨 Alerts & Insights")
+
+        try:
+            alerts = detect_alerts(
+                st.session_state.targets,
+                st.session_state.ledger,
+                st.session_state.touchpoints,
+                st.session_state.partners,
+                lookback_days=30
+            )
+
+            if alerts:
+                for alert in alerts[:3]:  # Show top 3
+                    severity_icon = {"critical": "🔴", "warning": "⚠️", "info": "💡"}
+                    icon = severity_icon.get(alert.severity, "ℹ️")
+
+                    with st.expander(f"{icon} {alert.title}", expanded=(alert.severity == "critical")):
+                        st.markdown(f"**Description:** {alert.description}")
+                        if alert.partner_name:
+                            st.markdown(f"**Partner:** {alert.partner_name}")
+                        st.info(f"💡 **Action:** {alert.recommended_action}")
+            else:
+                st.success("✅ No alerts. All metrics within expected ranges.")
+        except Exception as e:
+            st.warning(f"Unable to generate alerts: {str(e)}")
+
+        st.markdown("---")
+
+        # Charts Row
+        st.markdown("### Performance Analysis")
+        chart_col1, chart_col2 = st.columns(2)
+
+        with chart_col1:
+            if comparison:
+                try:
+                    fig = create_period_comparison_chart(comparison, metric_type="revenue")
+                    st.plotly_chart(fig, use_container_width=True, key="sales_comparison_chart")
+                except Exception as e:
+                    st.error(f"Error creating comparison chart: {str(e)}")
+            else:
+                # Show revenue trend without comparison
+                revenue_df = get_revenue_as_dataframe()
+                if not revenue_df.empty:
+                    filtered_revenue = revenue_df[
+                        (pd.to_datetime(revenue_df["revenue_date"]) >= pd.to_datetime(start_date)) &
+                        (pd.to_datetime(revenue_df["revenue_date"]) <= pd.to_datetime(end_date))
+                    ]
+                    st.plotly_chart(
+                        create_revenue_over_time_chart(filtered_revenue),
+                        use_container_width=True,
+                        key="sales_revenue_trend"
+                    )
+
+        with chart_col2:
+            # Top partners bar chart
+            attribution_agg = get_ledger_as_dataframe()
+            if not attribution_agg.empty:
+                filtered_attr = attribution_agg[
+                    (pd.to_datetime(attribution_agg["revenue_date"]) >= pd.to_datetime(start_date)) &
+                    (pd.to_datetime(attribution_agg["revenue_date"]) <= pd.to_datetime(end_date))
+                ]
+
+                if not filtered_attr.empty:
+                    partner_summary = filtered_attr.groupby(["partner_id", "partner_name"]).agg({
+                        "attributed_amount": "sum",
+                        "account_id": "nunique"
+                    }).reset_index()
+                    partner_summary.columns = ["partner_id", "partner_name", "attributed_amount", "accounts_influenced"]
+
+                    st.plotly_chart(
+                        create_partner_performance_bar_chart(partner_summary),
+                        use_container_width=True,
+                        key="sales_partner_performance"
+                    )
+
+        st.markdown("---")
+
+        # Top Movers Section
+        if comparison and previous_start and previous_end:
+            st.markdown("### 📈 Top Movers")
+
+            try:
+                movers = get_top_movers(
+                    st.session_state.ledger,
+                    st.session_state.partners,
+                    start_date,
+                    end_date,
+                    previous_start,
+                    previous_end
+                )
+
+                if movers:
+                    # Show top 10 in table
+                    movers_data = []
+                    for mover in movers[:10]:
+                        movers_data.append({
+                            "Partner": mover.partner_name,
+                            "Current": format_currency_compact(mover.current_revenue),
+                            "Previous": format_currency_compact(mover.previous_revenue),
+                            "Change": f"{mover.trend_indicator} {format_growth_percentage(mover.change_percentage / 100)}"
+                        })
+
+                    st.dataframe(
+                        pd.DataFrame(movers_data),
+                        use_container_width=True,
+                        hide_index=True
+                    )
+
+                    # Also show chart
+                    st.plotly_chart(
+                        create_top_movers_chart(movers, limit=8),
+                        use_container_width=True,
+                        key="sales_top_movers_chart"
+                    )
+                else:
+                    st.info("No partner activity changes to display")
+            except Exception as e:
+                st.warning(f"Unable to calculate top movers: {str(e)}")
+
+    else:
+        st.info("📊 **No data loaded yet.**\n\nGo to the **Data Import** tab to load demo data or upload your own data.")
+
+
+# ============================================================================
+# TAB 2: PARTNER MANAGEMENT DASHBOARD (NEW)
+# ============================================================================
+
+with tabs[2]:
+    st.title("🤝 Partner Management Dashboard")
+    st.caption("Comprehensive partner health, engagement metrics, and relationship insights for partner account managers")
+
+    if not st.session_state.partners:
+        st.info("📊 **No partners loaded yet.**\n\nGo to the **Data Import** tab to load demo data or upload your own data.")
+    else:
+        # Partner Selector
+        col1, col2 = st.columns([3, 1])
+
+        with col1:
+            # Create partner options sorted by recent revenue
+            partner_revenue = {}
+            for entry in st.session_state.ledger:
+                partner_revenue[entry.partner_id] = partner_revenue.get(entry.partner_id, 0) + entry.attributed_value
+
+            sorted_partners = sorted(
+                st.session_state.partners.items(),
+                key=lambda x: partner_revenue.get(x[0], 0),
+                reverse=True
+            )
+
+            selected_partner_id = st.selectbox(
+                "Select Partner",
+                options=[p[0] for p in sorted_partners],
+                format_func=lambda pid: f"{st.session_state.partners[pid]} ({pid})",
+                key="mgmt_partner_selector"
+            )
+
+            selected_partner_name = st.session_state.partners[selected_partner_id]
+
+        with col2:
+            # Show partner since date (first touchpoint)
+            partner_tps = [tp for tp in st.session_state.touchpoints if tp.partner_id == selected_partner_id]
+            if partner_tps:
+                first_tp = min([tp for tp in partner_tps if tp.timestamp], key=lambda tp: tp.timestamp, default=None)
+                if first_tp:
+                    st.metric("Partner Since", first_tp.timestamp.strftime("%b %Y"))
+
+        st.markdown("---")
+
+        # Calculate Health Score
+        try:
+            health_score = calculate_health_score(
+                selected_partner_id,
+                st.session_state.ledger,
+                st.session_state.touchpoints,
+                st.session_state.targets,
+                lookback_days=90
+            )
+
+            # Health Score Card
+            st.markdown("### Partner Health")
+
+            health_col1, health_col2 = st.columns([1, 2])
+
+            with health_col1:
+                # Large health gauge
+                fig = create_health_gauge(health_score.total_score, title="Health Score")
+                st.plotly_chart(fig, use_container_width=True, key="mgmt_health_gauge")
+
+            with health_col2:
+                # Health details card
+                health_emoji = get_health_emoji(health_score.total_score)
+                grade_desc = get_grade_description(health_score.grade)
+
+                st.markdown(f"""
+                <div style="background: rgba(255,255,255,0.75); border: 1px solid #e2e8f0; border-radius: 14px; padding: 1.5rem;">
+                    <h3>{health_emoji} {selected_partner_name}</h3>
+                    <p style="font-size: 1.2em;"><b>Grade: {health_score.grade}</b> ({grade_desc})</p>
+                    <p>Trend: {health_score.trend}</p>
+                </div>
+                """, unsafe_allow_html=True)
+
+                # Calculate metrics for insights
+                partner_ledger = [e for e in st.session_state.ledger if e.partner_id == selected_partner_id]
+
+                cutoff_30d = datetime.now() - timedelta(days=30)
+                recent_ledger = [e for e in partner_ledger if e.calculation_timestamp >= cutoff_30d]
+                prev_30d_start = datetime.now() - timedelta(days=60)
+                prev_30d_end = datetime.now() - timedelta(days=30)
+                prev_ledger = [e for e in partner_ledger
+                              if prev_30d_start <= e.calculation_timestamp < prev_30d_end]
+
+                recent_revenue = sum(e.attributed_value for e in recent_ledger)
+                prev_revenue = sum(e.attributed_value for e in prev_ledger)
+                revenue_growth = ((recent_revenue - prev_revenue) / prev_revenue) if prev_revenue > 0 else 0
+
+                win_rate = calculate_win_rate(
+                    selected_partner_id,
+                    st.session_state.targets,
+                    st.session_state.touchpoints
+                )
+
+                avg_deal = sum(e.attributed_value for e in partner_ledger) / len(partner_ledger) if partner_ledger else 0
+
+                deal_velocity = calculate_deal_velocity(
+                    selected_partner_id,
+                    st.session_state.targets,
+                    st.session_state.touchpoints
+                )
+
+                metrics_dict = {
+                    "revenue_growth": revenue_growth * 100,
+                    "win_rate": win_rate,
+                    "avg_deal_size": avg_deal,
+                    "deal_velocity": deal_velocity
+                }
+
+                insights = generate_partner_insights(selected_partner_id, health_score, metrics_dict)
+
+                # Strengths
+                if insights.strengths:
+                    st.markdown("**✅ Strengths:**")
+                    for strength in insights.strengths[:3]:
+                        st.markdown(f"• {strength}")
+
+                # Improvements
+                if insights.improvements:
+                    st.markdown("**⚠️ Areas to Improve:**")
+                    for improvement in insights.improvements[:2]:
+                        st.markdown(f"• {improvement}")
+
+                # Recommendations
+                if insights.recommendations:
+                    st.markdown("**💡 Recommendations:**")
+                    for rec in insights.recommendations[:2]:
+                        st.markdown(f"• {rec}")
+
+        except Exception as e:
+            st.error(f"Error calculating health score: {str(e)}")
+            health_score = None
+
+        st.markdown("---")
+
+        # Key Metrics Row
+        st.markdown("### Key Metrics")
+        metric_cols = st.columns(5)
+
+        partner_ledger = [e for e in st.session_state.ledger if e.partner_id == selected_partner_id]
+        total_attributed = sum(e.attributed_value for e in partner_ledger)
+        deal_count = len(set(e.target_id for e in partner_ledger))
+        avg_deal_size = total_attributed / deal_count if deal_count > 0 else 0
+
+        win_rate_calc = calculate_win_rate(
+            selected_partner_id,
+            st.session_state.targets,
+            st.session_state.touchpoints
+        )
+
+        with metric_cols[0]:
+            st.metric("Total Attributed", format_currency_compact(total_attributed))
+
+        with metric_cols[1]:
+            st.metric("Deals Influenced", str(deal_count))
+
+        with metric_cols[2]:
+            st.metric("Avg Deal Size", format_currency_compact(avg_deal_size))
+
+        with metric_cols[3]:
+            if win_rate_calc is not None:
+                st.metric("Win Rate", f"{win_rate_calc:.0%}")
+            else:
+                st.metric("Win Rate", "N/A", help="No stage data available")
+
+        with metric_cols[4]:
+            partner_tps_recent = [tp for tp in st.session_state.touchpoints
+                                 if tp.partner_id == selected_partner_id and tp.timestamp]
+            if partner_tps_recent:
+                last_tp = max(partner_tps_recent, key=lambda tp: tp.timestamp)
+                st.metric("Last Activity", format_days_ago(last_tp.timestamp))
+            else:
+                st.metric("Last Activity", "N/A")
+
+        st.markdown("---")
+
+        # Performance Trends
+        st.markdown("### Performance Trends")
+        trend_col1, trend_col2 = st.columns(2)
+
+        with trend_col1:
+            # Revenue trend (12 months)
+            try:
+                # Calculate monthly revenue for this partner
+                monthly_data = {}
+                for entry in partner_ledger:
+                    month_key = entry.calculation_timestamp.strftime("%Y-%m")
+                    monthly_data[month_key] = monthly_data.get(month_key, 0) + entry.attributed_value
+
+                if monthly_data:
+                    # Get last 12 months
+                    months = sorted(monthly_data.keys())[-12:]
+                    trend_df = pd.DataFrame({
+                        'month': months,
+                        'revenue': [monthly_data[m] for m in months]
+                    })
+
+                    fig = create_partner_revenue_trend(selected_partner_name, trend_df)
+                    st.plotly_chart(fig, use_container_width=True, key="mgmt_revenue_trend")
+                else:
+                    st.info("No revenue history available")
+            except Exception as e:
+                st.warning(f"Unable to create revenue trend: {str(e)}")
+
+        with trend_col2:
+            # Activity trend
+            try:
+                # Calculate monthly touchpoints
+                monthly_tps = {}
+                for tp in partner_tps_recent:
+                    if tp.timestamp:
+                        month_key = tp.timestamp.strftime("%Y-%m")
+                        monthly_tps[month_key] = monthly_tps.get(month_key, 0) + 1
+
+                if monthly_tps:
+                    months = sorted(monthly_tps.keys())[-12:]
+                    activity_df = pd.DataFrame({
+                        'month': months,
+                        'touchpoints': [monthly_tps[m] for m in months]
+                    })
+
+                    fig = create_partner_activity_trend(selected_partner_name, activity_df)
+                    st.plotly_chart(fig, use_container_width=True, key="mgmt_activity_trend")
+                else:
+                    st.info("No activity history available")
+            except Exception as e:
+                st.warning(f"Unable to create activity trend: {str(e)}")
+
+        st.markdown("---")
+
+        # Recent Deals Table
+        st.markdown("### Recent Deals (Last 10)")
+
+        partner_target_ids = {tp.target_id for tp in st.session_state.touchpoints
+                              if tp.partner_id == selected_partner_id}
+
+        recent_deals = []
+        for target in st.session_state.targets:
+            if target.id in partner_target_ids:
+                # Get this partner's ledger entry for this target
+                entry = next((e for e in partner_ledger if e.target_id == target.id), None)
+
+                if entry:
+                    # Get role from touchpoint
+                    tp = next((t for t in st.session_state.touchpoints
+                             if t.target_id == target.id and t.partner_id == selected_partner_id), None)
+
+                    recent_deals.append({
+                        "Deal ID": target.external_id,
+                        "Account": target.metadata.get("account_name", "Unknown"),
+                        "Close Date": target.timestamp.strftime("%Y-%m-%d"),
+                        "Value": format_currency_compact(target.value),
+                        "Role": tp.role if tp else "N/A",
+                        "Attribution": f"{entry.split_percentage:.0%}",
+                        "Attributed $": format_currency_compact(entry.attributed_value)
+                    })
+
+        if recent_deals:
+            # Sort by close date descending
+            recent_deals_sorted = sorted(recent_deals, key=lambda d: d["Close Date"], reverse=True)[:10]
+            st.dataframe(
+                pd.DataFrame(recent_deals_sorted),
+                use_container_width=True,
+                hide_index=True
+            )
+        else:
+            st.info("No deals found for this partner")
+
+
+# ============================================================================
+# TAB 3: DATA IMPORT (was TAB 1)
+# ============================================================================
+
+with tabs[3]:
     st.title("📥 Data Import")
     st.caption("Upload CSV data with automatic schema detection")
 
@@ -913,10 +1489,10 @@ Perfect for exploring features and presenting to stakeholders.
 
 
 # ============================================================================
-# TAB 2: RULE BUILDER (NEW)
+# TAB 4: RULE BUILDER (was TAB 2)
 # ============================================================================
 
-with tabs[2]:
+with tabs[4]:
     st.title("⚙️ Rule Builder")
     st.caption("Create attribution rules using natural language, templates, or manual configuration")
 
@@ -1152,10 +1728,10 @@ with tabs[2]:
 
 
 # ============================================================================
-# TAB 3: RULES & TEMPLATES (NEW)
+# TAB 5: RULES & TEMPLATES (was TAB 3)
 # ============================================================================
 
-with tabs[3]:
+with tabs[5]:
     st.title("📋 Active Rules & Templates")
 
     if st.session_state.rules:
@@ -1182,10 +1758,10 @@ with tabs[3]:
 
 
 # ============================================================================
-# TAB 4: DEAL DRILLDOWN (NEW)
+# TAB 6: DEAL DRILLDOWN (was TAB 4)
 # ============================================================================
 
-with tabs[4]:
+with tabs[6]:
     st.title("💰 Deal Drilldown")
     st.caption("Detailed attribution breakdown for individual deals - perfect for partner dispute resolution")
 
@@ -1487,10 +2063,10 @@ with tabs[4]:
 
 
 # ============================================================================
-# TAB 5: LEDGER EXPLORER (NEW)
+# TAB 7: LEDGER EXPLORER (was TAB 5)
 # ============================================================================
 
-with tabs[5]:
+with tabs[7]:
     st.title("🔍 Attribution Ledger Explorer")
     st.caption("Immutable audit trail of all attribution calculations")
 

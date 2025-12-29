@@ -65,6 +65,11 @@ def generate_demo_targets(num_targets: int = 10) -> List[AttributionTarget]:
     - 40% Mid-Market ($25K-$100K)
     - 15% Enterprise ($100K-$500K)
     - 5% Strategic ($500K-$2M)
+
+    Stage distribution:
+    - 60% Closed Won
+    - 10% Closed Lost
+    - 30% Open Pipeline (Discovery, Qualification, Proposal, Negotiation)
     """
     targets = []
     base_date = datetime.now() - timedelta(days=90)  # Deals from last 90 days
@@ -81,9 +86,31 @@ def generate_demo_targets(num_targets: int = 10) -> List[AttributionTarget]:
         else:  # Strategic
             value = random.randint(500000, 2000000)
 
-        # Random close date within last 90 days
+        # Random close date within last 90 days (or future for open pipeline)
         days_ago = random.randint(0, 90)
         close_date = base_date + timedelta(days=days_ago)
+
+        # Determine stage (60% Closed Won, 10% Closed Lost, 30% Open)
+        stage_rand = random.random()
+        if stage_rand < 0.60:  # 60% Closed Won
+            stage = "Closed Won"
+            # Closed deals use the close_date as-is
+        elif stage_rand < 0.70:  # 10% Closed Lost
+            stage = "Closed Lost"
+            # Closed deals use the close_date as-is
+        else:  # 30% Open Pipeline
+            stage = random.choice([
+                "Discovery",
+                "Qualification",
+                "Proposal",
+                "Negotiation"
+            ])
+            # Open deals have future expected close dates
+            close_date = datetime.now() + timedelta(days=random.randint(15, 60))
+
+        # Created date: 30-90 days before close date
+        days_before_close = random.randint(30, 90)
+        created_date = close_date - timedelta(days=days_before_close)
 
         target = AttributionTarget(
             id=i + 1,
@@ -93,7 +120,11 @@ def generate_demo_targets(num_targets: int = 10) -> List[AttributionTarget]:
             timestamp=close_date,
             metadata={
                 "account_name": DEMO_COMPANIES[i % len(DEMO_COMPANIES)],
-                "stage": "Closed Won",
+                "account_id": f"ACC-{200 + (i % len(DEMO_COMPANIES))}",
+                "stage": stage,
+                "created_date": created_date.isoformat(),
+                "is_won": stage == "Closed Won",
+                "is_closed": stage in ["Closed Won", "Closed Lost"],
                 "region": random.choice(["North America", "EMEA", "APAC"]),
                 "deal_type": random.choice(["New Business", "Expansion", "Renewal"])
             }
@@ -143,7 +174,7 @@ def generate_demo_touchpoints(targets: List[AttributionTarget]) -> List[PartnerT
                 id=touchpoint_id,
                 partner_id=partner_id,
                 target_id=target.id,
-                touchpoint_type=TouchpointType.PARTNER_ENGAGEMENT,
+                touchpoint_type=TouchpointType.ACTIVITY,
                 role=DEMO_PARTNER_ROLES[partner_id],
                 weight=float(activity_count),
                 timestamp=touchpoint_date,
