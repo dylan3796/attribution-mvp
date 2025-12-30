@@ -74,9 +74,10 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Preserve original styling
+# Theme-aware styling for light and dark modes
 st.markdown("""
 <style>
+/* Light theme (default) */
 body {
     background: linear-gradient(135deg, #f5f7fa 0%, #e8f0ff 50%, #fdfbfb 100%);
 }
@@ -91,13 +92,13 @@ section.main > div {
 }
 .stTabs [role="tab"] {
     border-radius: 12px;
-    background: #f2f4f8;
+    background: rgba(242, 244, 248, 0.8);
     padding: 0.35rem 0.75rem;
-    border: 1px solid #e0e6ef;
+    border: 1px solid rgba(224, 230, 239, 0.8);
 }
 .stTabs [aria-selected="true"] {
-    background: #d7e3ff;
-    border-color: #b6ccff;
+    background: rgba(215, 227, 255, 0.9);
+    border-color: rgba(182, 204, 255, 0.9);
     color: #0b3ba7 !important;
     font-weight: 600;
 }
@@ -107,6 +108,88 @@ section.main > div {
     border-radius: 14px;
     padding: 1rem 1.25rem;
     box-shadow: 0 10px 30px rgba(12,33,80,0.07);
+}
+
+/* Button styling for better visibility in both themes */
+.stButton > button {
+    border: 2px solid rgba(150, 150, 150, 0.3) !important;
+    transition: all 0.2s ease !important;
+}
+.stButton > button:hover {
+    border-color: rgba(100, 100, 255, 0.5) !important;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1) !important;
+}
+
+/* Dark theme overrides */
+@media (prefers-color-scheme: dark) {
+    body {
+        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f1419 100%);
+    }
+
+    .stTabs [role="tab"] {
+        background: rgba(45, 55, 72, 0.8);
+        border: 1px solid rgba(74, 85, 104, 0.8);
+        color: rgba(255, 255, 255, 0.9) !important;
+    }
+
+    .stTabs [aria-selected="true"] {
+        background: rgba(66, 153, 225, 0.3);
+        border-color: rgba(66, 153, 225, 0.6);
+        color: #90cdf4 !important;
+        font-weight: 600;
+    }
+
+    .metric-card {
+        background: rgba(45, 55, 72, 0.6);
+        border: 1px solid rgba(74, 85, 104, 0.6);
+        box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+    }
+
+    /* Better button visibility in dark mode */
+    .stButton > button {
+        background-color: rgba(66, 153, 225, 0.15) !important;
+        border: 2px solid rgba(66, 153, 225, 0.4) !important;
+        color: rgba(255, 255, 255, 0.95) !important;
+    }
+
+    .stButton > button:hover {
+        background-color: rgba(66, 153, 225, 0.25) !important;
+        border-color: rgba(66, 153, 225, 0.7) !important;
+        box-shadow: 0 0 12px rgba(66, 153, 225, 0.3) !important;
+    }
+
+    .stButton > button[kind="primary"] {
+        background-color: rgba(66, 153, 225, 0.4) !important;
+        border-color: rgba(66, 153, 225, 0.8) !important;
+    }
+
+    .stButton > button[kind="primary"]:hover {
+        background-color: rgba(66, 153, 225, 0.5) !important;
+        box-shadow: 0 0 16px rgba(66, 153, 225, 0.5) !important;
+    }
+}
+
+/* Streamlit's dark theme class override */
+[data-testid="stAppViewContainer"][data-theme="dark"] .stButton > button {
+    background-color: rgba(66, 153, 225, 0.15) !important;
+    border: 2px solid rgba(66, 153, 225, 0.4) !important;
+    color: rgba(255, 255, 255, 0.95) !important;
+}
+
+[data-testid="stAppViewContainer"][data-theme="dark"] .stButton > button:hover {
+    background-color: rgba(66, 153, 225, 0.25) !important;
+    border-color: rgba(66, 153, 225, 0.7) !important;
+    box-shadow: 0 0 12px rgba(66, 153, 225, 0.3) !important;
+}
+
+[data-testid="stAppViewContainer"][data-theme="dark"] .stButton > button[kind="primary"] {
+    background-color: rgba(66, 153, 225, 0.4) !important;
+    border-color: rgba(66, 153, 225, 0.8) !important;
+}
+
+[data-testid="stAppViewContainer"][data-theme="dark"] .stButton > button[kind="primary"]:hover {
+    background-color: rgba(66, 153, 225, 0.5) !important;
+    box-shadow: 0 0 16px rgba(66, 153, 225, 0.5) !important;
 }
 </style>
 """, unsafe_allow_html=True)
