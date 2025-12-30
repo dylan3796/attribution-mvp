@@ -142,6 +142,26 @@ if "partners" not in st.session_state:
         "P008": "EnterprisePartners"
     }
 
+# Global filters state
+if "global_filters" not in st.session_state:
+    st.session_state.global_filters = {
+        "date_range": (datetime.now() - timedelta(days=90), datetime.now()),
+        "selected_partners": [],
+        "deal_stage": "All",
+        "min_deal_size": 0
+    }
+
+# Metric visibility toggles
+if "visible_metrics" not in st.session_state:
+    st.session_state.visible_metrics = {
+        "revenue": True,
+        "deal_count": True,
+        "active_partners": True,
+        "avg_deal_size": True,
+        "win_rate": False,
+        "deal_velocity": False
+    }
+
 
 # ============================================================================
 # Helper Functions
@@ -235,6 +255,64 @@ def get_revenue_as_dataframe() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def apply_global_filters(ledger_entries: List[LedgerEntry]) -> List[LedgerEntry]:
+    """
+    Apply global filters to ledger entries.
+    Returns filtered list based on sidebar filter selections.
+    """
+    filtered = ledger_entries
+
+    # Date range filter
+    if st.session_state.global_filters["date_range"]:
+        start_date, end_date = st.session_state.global_filters["date_range"]
+        # Convert to datetime for comparison
+        start_dt = datetime.combine(start_date, datetime.min.time()) if isinstance(start_date, date) else start_date
+        end_dt = datetime.combine(end_date, datetime.max.time()) if isinstance(end_date, date) else end_date
+
+        filtered = [
+            entry for entry in filtered
+            if start_dt <= entry.calculation_timestamp <= end_dt
+        ]
+
+    # Partner filter
+    if st.session_state.global_filters["selected_partners"]:
+        filtered = [
+            entry for entry in filtered
+            if entry.partner_id in st.session_state.global_filters["selected_partners"]
+        ]
+
+    # Min deal size filter
+    if st.session_state.global_filters["min_deal_size"] > 0:
+        filtered = [
+            entry for entry in filtered
+            if entry.attributed_value >= st.session_state.global_filters["min_deal_size"]
+        ]
+
+    return filtered
+
+
+def export_ledger_to_csv(ledger_entries: List[LedgerEntry]) -> str:
+    """Convert ledger entries to CSV format for download."""
+    if not ledger_entries:
+        return "partner_id,partner_name,attributed_value,split_percentage,target_id,calculation_timestamp\n"
+
+    rows = []
+    for entry in ledger_entries:
+        partner_name = st.session_state.partners.get(entry.partner_id, entry.partner_id)
+        rows.append({
+            "partner_id": entry.partner_id,
+            "partner_name": partner_name,
+            "attributed_value": entry.attributed_value,
+            "split_percentage": entry.split_percentage,
+            "target_id": entry.target_id,
+            "rule_id": entry.rule_id,
+            "calculation_timestamp": entry.calculation_timestamp.strftime("%Y-%m-%d %H:%M:%S")
+        })
+
+    df = pd.DataFrame(rows)
+    return df.to_csv(index=False)
+
+
 # ============================================================================
 # Main App
 # ============================================================================
@@ -242,16 +320,94 @@ def get_revenue_as_dataframe() -> pd.DataFrame:
 st.title("🎯 Attribution MVP - Universal Architecture")
 st.caption("Config-driven partner attribution with CSV upload, templates, and natural language rules")
 
-# Sidebar stats
+# Sidebar stats and filters
 with st.sidebar:
-    st.markdown("### Quick Stats")
-    st.metric("Targets Loaded", len(st.session_state.targets))
-    st.metric("Touchpoints", len(st.session_state.touchpoints))
-    st.metric("Active Rules", len([r for r in st.session_state.rules if r.active]))
-    st.metric("Ledger Entries", len(st.session_state.ledger))
+    st.markdown("### 🔍 Global Filters")
+    st.caption("Apply filters to all dashboards")
+
+    # Date range filter
+    date_range = st.date_input(
+        "📅 Date Range",
+        value=st.session_state.global_filters["date_range"],
+        key="date_range_input",
+        help="Filter data by date range"
+    )
+    if len(date_range) == 2:
+        st.session_state.global_filters["date_range"] = date_range
+
+    # Partner filter
+    partner_tuples = sorted(
+        [(pid, name) for pid, name in st.session_state.partners.items()],
+        key=lambda x: x[1]
+    )
+    partner_display = [f"{name} ({pid})" for pid, name in partner_tuples]
+
+    selected_partners_display = st.multiselect(
+        "👥 Partners",
+        options=partner_display,
+        default=[] if not st.session_state.global_filters["selected_partners"] else [
+            f"{st.session_state.partners.get(pid, pid)} ({pid})"
+            for pid in st.session_state.global_filters["selected_partners"]
+        ],
+        help="Filter by specific partners (leave empty for all)"
+    )
+
+    # Extract partner IDs from display strings
+    if selected_partners_display:
+        selected_pids = []
+        for display_str in selected_partners_display:
+            if "(" in display_str and ")" in display_str:
+                # Extract PID from "Partner Name (P001)" format
+                pid = display_str.split("(")[-1].replace(")", "")
+                selected_pids.append(pid)
+        st.session_state.global_filters["selected_partners"] = selected_pids
+    else:
+        st.session_state.global_filters["selected_partners"] = []
+
+    # Min deal size filter
+    min_deal_size = st.number_input(
+        "💰 Min Deal Size",
+        min_value=0,
+        value=st.session_state.global_filters["min_deal_size"],
+        step=1000,
+        help="Show only deals above this value"
+    )
+    st.session_state.global_filters["min_deal_size"] = min_deal_size
+
+    # Show active filter count
+    active_filters = 0
+    if st.session_state.global_filters["selected_partners"]:
+        active_filters += 1
+    if st.session_state.global_filters["min_deal_size"] > 0:
+        active_filters += 1
+
+    if active_filters > 0:
+        st.info(f"🎯 {active_filters} filter(s) active")
+
+    # Reset filters button
+    if st.button("🔄 Reset Filters", use_container_width=True):
+        st.session_state.global_filters = {
+            "date_range": (datetime.now() - timedelta(days=90), datetime.now()),
+            "selected_partners": [],
+            "deal_stage": "All",
+            "min_deal_size": 0
+        }
+        st.rerun()
 
     st.markdown("---")
-    st.markdown("### Architecture")
+
+    st.markdown("### 📊 Quick Stats")
+    # Apply filters to show filtered stats
+    filtered_ledger = apply_global_filters(st.session_state.ledger)
+    filtered_revenue = sum(entry.attributed_value for entry in filtered_ledger)
+
+    st.metric("Targets Loaded", len(st.session_state.targets))
+    st.metric("Ledger Entries", f"{len(filtered_ledger)} / {len(st.session_state.ledger)}")
+    st.metric("Filtered Revenue", f"${filtered_revenue:,.0f}")
+    st.metric("Active Rules", len([r for r in st.session_state.rules if r.active]))
+
+    st.markdown("---")
+    st.markdown("### 🏗️ Architecture")
     st.info(f"""
 **Schema Version:** {SCHEMA_VERSION}
 
@@ -263,17 +419,22 @@ with st.sidebar:
     """)
 
 
-# Main tabs
+# Main tabs - Organized by role/workflow
 tabs = st.tabs([
-    "📊 Executive Dashboard",
-    "💼 Partner Sales",
-    "🤝 Partner Management",
-    "📥 Data Import",
-    "⚙️ Rule Builder",
-    "📋 Rules & Templates",
-    "🔄 Measurement Workflows",
-    "💰 Deal Drilldown",
-    "🔍 Ledger Explorer"
+    # 🎯 OPERATIONAL VIEWS (Daily Use)
+    "📊 Executive Dashboard",      # Tab 0: C-suite overview
+    "💼 Partner Sales",            # Tab 1: Partner performance & revenue
+    "🤝 Partner Management",       # Tab 2: Partner health & alerts
+    "💰 Deal Drilldown",           # Tab 3: Dispute resolution
+
+    # ⚙️ SETUP & CONFIGURATION (Admin)
+    "📥 Data Import",              # Tab 4: Upload data
+    "🔄 Measurement Workflows",    # Tab 5: Configure attribution methods
+    "⚙️ Rule Builder",             # Tab 6: Create attribution rules
+    "📋 Rules & Templates",        # Tab 7: Manage rules
+
+    # 🔍 ADVANCED (Audit & Deep Dive)
+    "🔍 Ledger Explorer"           # Tab 8: Immutable audit trail
 ])
 
 
@@ -282,96 +443,58 @@ tabs = st.tabs([
 # ============================================================================
 
 with tabs[0]:
-    st.title("Attribution Dashboard")
-    st.caption("Executive overview of partner attribution performance and metrics")
+    col_title, col_export, col_customize = st.columns([3, 1, 1])
 
-    # Enhanced Date Range Selector
-    col1, col2, col3 = st.columns([2, 2, 2])
+    with col_title:
+        st.title("📊 Executive Dashboard")
+        st.caption("Executive overview of partner attribution performance and metrics")
 
-    with col1:
-        period_type = st.selectbox(
-            "Period Type",
-            ["Quick Range", "Month", "Quarter", "Year", "Custom"],
-            help="Select how you want to define the reporting period"
-        )
-
-    with col2:
-        if period_type == "Quick Range":
-            days = st.selectbox(
-                "Time Range",
-                [7, 30, 60, 90, 180],
-                index=1,
-                format_func=lambda x: f"Last {x} days"
-            )
-            end_date = date.today()
-            start_date = end_date - timedelta(days=days)
-
-        elif period_type == "Month":
-            # Generate last 12 months
-            months = []
-            today = date.today()
-            for i in range(12):
-                month_date = today.replace(day=1) - timedelta(days=i*30)
-                months.append((month_date.strftime("%B %Y"), month_date.year, month_date.month))
-
-            selected_month = st.selectbox(
-                "Select Month",
-                [m[0] for m in months],
-                help="Choose a specific month for reporting"
+    with col_export:
+        st.markdown("") # Spacing
+        if st.button("📥 Export CSV", key="exec_export", use_container_width=True):
+            filtered_ledger = apply_global_filters(st.session_state.ledger)
+            csv_data = export_ledger_to_csv(filtered_ledger)
+            st.download_button(
+                "Download Data",
+                csv_data,
+                "executive_dashboard.csv",
+                "text/csv",
+                key="exec_download"
             )
 
-            # Find selected month details
-            year, month = next((m[1], m[2]) for m in months if m[0] == selected_month)
-            start_date = date(year, month, 1)
-            last_day = calendar.monthrange(year, month)[1]
-            end_date = date(year, month, last_day)
-
-        elif period_type == "Quarter":
-            # Generate last 4 quarters
-            quarters = []
-            today = date.today()
-            current_quarter = (today.month - 1) // 3 + 1
-            current_year = today.year
-
-            for i in range(4):
-                q = current_quarter - i
-                y = current_year
-                while q <= 0:
-                    q += 4
-                    y -= 1
-                quarters.append((f"Q{q} {y}", y, q))
-
-            selected_quarter = st.selectbox(
-                "Select Quarter",
-                [q[0] for q in quarters],
-                help="Choose a specific quarter for reporting"
+    with col_customize:
+        st.markdown("") # Spacing
+        with st.popover("⚙️ Metrics", use_container_width=True):
+            st.markdown("**Show/Hide Metrics**")
+            st.session_state.visible_metrics["revenue"] = st.checkbox(
+                "Total Revenue",
+                value=st.session_state.visible_metrics["revenue"]
+            )
+            st.session_state.visible_metrics["deal_count"] = st.checkbox(
+                "Deal Count",
+                value=st.session_state.visible_metrics["deal_count"]
+            )
+            st.session_state.visible_metrics["active_partners"] = st.checkbox(
+                "Active Partners",
+                value=st.session_state.visible_metrics["active_partners"]
+            )
+            st.session_state.visible_metrics["avg_deal_size"] = st.checkbox(
+                "Avg Deal Size",
+                value=st.session_state.visible_metrics["avg_deal_size"]
             )
 
-            # Calculate quarter dates
-            year, quarter = next((q[1], q[2]) for q in quarters if q[0] == selected_quarter)
-            start_month = (quarter - 1) * 3 + 1
-            start_date = date(year, start_month, 1)
-            end_month = start_month + 2
-            last_day = calendar.monthrange(year, end_month)[1]
-            end_date = date(year, end_month, last_day)
+    # Use global filters from sidebar
+    start_date, end_date = st.session_state.global_filters["date_range"]
 
-        elif period_type == "Year":
-            current_year = date.today().year
-            years = [current_year - i for i in range(3)]
-            selected_year = st.selectbox("Select Year", years)
-            start_date = date(selected_year, 1, 1)
-            end_date = date(selected_year, 12, 31)
+    # Convert date to datetime if needed
+    if isinstance(start_date, date) and not isinstance(start_date, datetime):
+        start_date = datetime.combine(start_date, datetime.min.time())
+    if isinstance(end_date, date) and not isinstance(end_date, datetime):
+        end_date = datetime.combine(end_date, datetime.max.time())
 
-        else:  # Custom
-            start_date = st.date_input("Start Date", value=date.today() - timedelta(days=30))
-            end_date = st.date_input("End Date", value=date.today())
-
-    with col3:
-        st.metric(
-            "Report Period",
-            f"{(end_date - start_date).days} days",
-            help="Length of the selected reporting period"
-        )
+    # Show current filter info
+    period_days = (end_date - start_date).days + 1
+    st.info(f"📅 Showing data for: **{start_date.strftime('%b %d, %Y')}** to **{end_date.strftime('%b %d, %Y')}** ({period_days} days) • Change filters in sidebar")
 
     # Get data using new architecture
     with st.spinner("📊 Loading dashboard data..."):
@@ -394,17 +517,35 @@ with tabs[0]:
 
     # Show dashboard content only if data is loaded
     if len(st.session_state.targets) > 0:
-        # Filter by date range
+        # Apply global filters
+        filtered_ledger = apply_global_filters(st.session_state.ledger)
+
+        # Convert filtered ledger back to DataFrame
+        if filtered_ledger:
+            filtered_rows = []
+            for entry in filtered_ledger:
+                target = next((t for t in st.session_state.targets if t.id == entry.target_id), None)
+                if not target:
+                    continue
+                partner_name = st.session_state.partners.get(entry.partner_id, entry.partner_id)
+                filtered_rows.append({
+                    "partner_id": entry.partner_id,
+                    "partner_name": partner_name,
+                    "attributed_amount": entry.attributed_value,
+                    "split_percent": entry.split_percentage,
+                    "revenue_date": target.timestamp.date() if isinstance(target.timestamp, datetime) else target.timestamp,
+                    "account_id": target.metadata.get("account_id", "unknown"),
+                    "accounts_influenced": 1
+                })
+            attribution_df = pd.DataFrame(filtered_rows)
+        else:
+            attribution_df = pd.DataFrame(columns=["partner_id", "partner_name", "attributed_amount", "split_percent", "revenue_date", "account_id"])
+
+        # Filter revenue by date range
         if not revenue_df.empty:
             revenue_df = revenue_df[
                 (pd.to_datetime(revenue_df["revenue_date"]) >= pd.to_datetime(start_date)) &
                 (pd.to_datetime(revenue_df["revenue_date"]) <= pd.to_datetime(end_date))
-            ]
-
-        if not attribution_df.empty:
-            attribution_df = attribution_df[
-                (pd.to_datetime(attribution_df["revenue_date"]) >= pd.to_datetime(start_date)) &
-                (pd.to_datetime(attribution_df["revenue_date"]) <= pd.to_datetime(end_date))
             ]
 
         # Aggregate attribution by partner (for charts)
@@ -713,8 +854,36 @@ with tabs[0]:
 # ============================================================================
 
 with tabs[1]:
-    st.title("💼 Partner Sales Dashboard")
-    st.caption("Track revenue growth, performance trends, and actionable insights for partner sales managers")
+    col_title, col_export = st.columns([4, 1])
+
+    with col_title:
+        st.title("💼 Partner Sales Dashboard")
+        st.caption("Track revenue growth, performance trends, and actionable insights for partner sales managers")
+
+    with col_export:
+        st.markdown("") # Spacing
+        if st.button("📥 Export CSV", key="sales_export", use_container_width=True):
+            filtered_ledger = apply_global_filters(st.session_state.ledger)
+            csv_data = export_ledger_to_csv(filtered_ledger)
+            st.download_button(
+                "Download Data",
+                csv_data,
+                "partner_sales_dashboard.csv",
+                "text/csv",
+                key="sales_download"
+            )
+
+    st.markdown("---")
+
+    # Use global filters
+    start_date, end_date = st.session_state.global_filters["date_range"]
+    if isinstance(start_date, date) and not isinstance(start_date, datetime):
+        start_date = datetime.combine(start_date, datetime.min.time())
+    if isinstance(end_date, date) and not isinstance(end_date, datetime):
+        end_date = datetime.combine(end_date, datetime.max.time())
+
+    period_days = (end_date - start_date).days + 1
+    st.info(f"📅 Showing data for: **{start_date.strftime('%b %d, %Y')}** to **{end_date.strftime('%b %d, %Y')}** ({period_days} days) • Change filters in sidebar")
 
     # Date Range Selector with Comparison Toggle
     col1, col2, col3 = st.columns([2, 2, 1])
@@ -996,8 +1165,26 @@ with tabs[1]:
 # ============================================================================
 
 with tabs[2]:
-    st.title("🤝 Partner Management Dashboard")
-    st.caption("Comprehensive partner health, engagement metrics, and relationship insights for partner account managers")
+    col_title, col_export = st.columns([4, 1])
+
+    with col_title:
+        st.title("🤝 Partner Management Dashboard")
+        st.caption("Comprehensive partner health, engagement metrics, and relationship insights for partner account managers")
+
+    with col_export:
+        st.markdown("") # Spacing
+        if st.button("📥 Export CSV", key="mgmt_export", use_container_width=True):
+            filtered_ledger = apply_global_filters(st.session_state.ledger)
+            csv_data = export_ledger_to_csv(filtered_ledger)
+            st.download_button(
+                "Download Data",
+                csv_data,
+                "partner_management_dashboard.csv",
+                "text/csv",
+                key="mgmt_download"
+            )
+
+    st.markdown("---")
 
     if not st.session_state.partners:
         st.info("📊 **No partners loaded yet.**\n\nGo to the **Data Import** tab to load demo data or upload your own data.")
@@ -1265,10 +1452,10 @@ with tabs[2]:
 
 
 # ============================================================================
-# TAB 3: DATA IMPORT (was TAB 1)
+# TAB 4: DATA IMPORT
 # ============================================================================
 
-with tabs[3]:
+with tabs[4]:
     st.title("📥 Data Import")
     st.caption("Upload CSV data with automatic schema detection")
 
@@ -1490,249 +1677,295 @@ Perfect for exploring features and presenting to stakeholders.
 
 
 # ============================================================================
-# TAB 4: RULE BUILDER (was TAB 2)
+# ============================================================================
+# TAB 6: VISUAL RULE BUILDER (SIMPLIFIED UX)
 # ============================================================================
 
-with tabs[4]:
-    st.title("⚙️ Rule Builder")
-    st.caption("Create attribution rules using natural language, templates, or manual configuration")
+with tabs[6]:
+    st.title("🎨 Build Your Attribution Rule")
+    st.caption("No coding required - just drag sliders and see results instantly")
 
-    # ========================================
-    # NATURAL LANGUAGE RULE CREATOR (HERO)
-    # ========================================
-    st.markdown("### ✨ Describe Your Attribution Model in Plain English")
-    st.markdown('<p style="font-size: 0.9em; color: #6b7280; margin-top: -10px;">Powered by <b>Claude AI</b> — converts natural language to attribution rules instantly</p>', unsafe_allow_html=True)
+    # Quick start templates
+    st.markdown("### 🚀 Quick Start")
+    st.markdown("Pick a template or build from scratch:")
 
-    # Example prompts (clickable chips)
-    st.markdown("**Try these examples:**")
-    examples = get_example_prompts()
+    template_cols = st.columns(4)
 
-    # Create clickable example chips using columns
-    example_cols = st.columns(2)
+    template_selected = None
+    with template_cols[0]:
+        if st.button("⚡ Equal Split\n*All partners get equal credit*", use_container_width=True, key="tmpl_equal"):
+            template_selected = "equal"
 
-    if "nl_input_text" not in st.session_state:
-        st.session_state.nl_input_text = ""
+    with template_cols[1]:
+        if st.button("🎯 60/30/10 Split\n*SI 60%, Influence 30%, Referral 10%*", use_container_width=True, key="tmpl_603010"):
+            template_selected = "603010"
 
-    with example_cols[0]:
-        if st.button("📊 " + examples[0]["prompt"][:50] + "...", use_container_width=True):
-            st.session_state.nl_input_text = examples[0]["prompt"]
-            st.rerun()
-        if st.button("📊 " + examples[1]["prompt"][:50] + "...", use_container_width=True):
-            st.session_state.nl_input_text = examples[1]["prompt"]
-            st.rerun()
-        if st.button("📊 " + examples[2]["prompt"][:50] + "...", use_container_width=True):
-            st.session_state.nl_input_text = examples[2]["prompt"]
-            st.rerun()
+    with template_cols[2]:
+        if st.button("🏆 Winner Takes All\n*First partner gets 100%*", use_container_width=True, key="tmpl_winner"):
+            template_selected = "winner"
 
-    with example_cols[1]:
-        if st.button("📊 " + examples[3]["prompt"][:50] + "...", use_container_width=True):
-            st.session_state.nl_input_text = examples[3]["prompt"]
-            st.rerun()
-        if st.button("📊 " + examples[4]["prompt"][:50] + "...", use_container_width=True):
-            st.session_state.nl_input_text = examples[4]["prompt"]
-            st.rerun()
-        if st.button("💡 See all 8 examples", use_container_width=True):
-            with st.expander("📚 All Example Prompts", expanded=True):
-                for ex in examples:
-                    st.markdown(f"**{ex['description']}**")
-                    st.code(ex["prompt"], language="text")
-                    st.markdown("---")
-
-    # Main NL input (large and prominent)
-    nl_input = st.text_area(
-        "Your attribution rule:",
-        value=st.session_state.nl_input_text,
-        placeholder="e.g., 'SI partners get 60%, Influence 30%, Referral 10%' or 'Give more credit to recent partner touches'",
-        height=120,
-        help="Describe how you want to split attribution among partners. Use plain English!"
-    )
-
-    # Parse button (prominent)
-    parse_col1, parse_col2, parse_col3 = st.columns([2, 1, 2])
-
-    with parse_col2:
-        parse_clicked = st.button("🚀 Generate Rule", type="primary", use_container_width=True)
-
-    if parse_clicked and nl_input:
-        with st.spinner("🤖 AI is parsing your rule..."):
-            success, rule_config, error = parse_nl_to_rule(nl_input)
-
-            if success:
-                st.success("✅ **Rule generated successfully!**")
-
-                # Beautiful preview card
-                st.markdown("---")
-                st.markdown("### 📋 Generated Rule Configuration")
-
-                col1, col2 = st.columns(2)
-
-                with col1:
-                    st.markdown(f"**Rule Name:**")
-                    st.info(rule_config['name'])
-
-                    st.markdown(f"**Attribution Model:**")
-                    st.info(rule_config['model_type'].replace('_', ' ').title())
-
-                    st.markdown(f"**Split Constraint:**")
-                    st.info(rule_config['split_constraint'].replace('_', ' ').title())
-
-                with col2:
-                    st.markdown(f"**Model Configuration:**")
-                    st.json(rule_config['config'])
-
-                # Show full JSON config in expander
-                with st.expander("🔍 View Full JSON Configuration"):
-                    st.json(rule_config)
-
-                # Action buttons
-                st.markdown("---")
-                action_col1, action_col2, action_col3 = st.columns([1, 1, 2])
-
-                with action_col1:
-                    if st.button("💾 Save This Rule", type="primary", use_container_width=True):
-                        new_rule = AttributionRule(
-                            id=len(st.session_state.rules) + 1,
-                            name=rule_config["name"],
-                            model_type=AttributionModel(rule_config["model_type"]),
-                            config=rule_config["config"],
-                            split_constraint=SplitConstraint(rule_config["split_constraint"]),
-                            applies_to=rule_config.get("applies_to", {}),
-                            priority=100,
-                            active=True
-                        )
-                        st.session_state.rules.append(new_rule)
-
-                        # AUTO-RECALCULATE: Trigger attribution calculation with new rule
-                        with st.spinner("💡 Recalculating attribution with new rule..."):
-                            count = calculate_attribution_for_all_targets()
-
-                        st.success(f"✅ Rule saved! Created {count} new ledger entries")
-                        st.balloons()
-                        st.rerun()
-
-                with action_col2:
-                    if st.button("✏️ Edit Manually", use_container_width=True):
-                        st.info("👉 Use the 'Manual Config' tab below to modify the JSON configuration")
-
-            else:
-                st.error(f"❌ **Could not parse your rule**")
-                st.markdown(f"**Error:** {error}")
-
-                # Helpful suggestions
-                st.markdown("**💡 Suggestions:**")
-                st.markdown("""
-- Try being more specific: "SI partners get 50%, Influence 30%, Referral 20%"
-- Use keywords: "equal split", "first touch", "time decay", "activity based"
-- Check the examples above for guidance
-- Or use the Template Selection tab for pre-built rules
-                """)
-
-    elif parse_clicked and not nl_input:
-        st.warning("⚠️ Please describe your attribution rule first!")
+    with template_cols[3]:
+        if st.button("🔨 Custom\n*Build your own rule*", use_container_width=True, key="tmpl_custom"):
+            template_selected = "custom"
 
     st.markdown("---")
 
-    # ========================================
-    # ALTERNATIVE: TEMPLATES & MANUAL CONFIG
-    # ========================================
-    st.markdown("### 📚 Or Choose a Different Approach")
+    # Initialize session state for rule builder
+    if "visual_builder" not in st.session_state:
+        st.session_state.visual_builder = {
+            "rule_name": "My Custom Rule",
+            "roles": ["Implementation (SI)", "Referral"],
+            "splits": {"Implementation (SI)": 70, "Referral": 30},
+            "applies_to_all": True,
+            "min_deal_size": 0
+        }
 
-    builder_tabs = st.tabs(["Template Selection", "Manual Config"])
+    # Apply template if selected
+    if template_selected == "equal":
+        st.session_state.visual_builder["rule_name"] = "Equal Split"
+        st.session_state.visual_builder["splits"] = {
+            role: 100 // len(DEFAULT_PARTNER_ROLES)
+            for role in DEFAULT_PARTNER_ROLES[:3]
+        }
+        st.session_state.visual_builder["roles"] = DEFAULT_PARTNER_ROLES[:3]
 
-    # Template Selection sub-tab
-    with builder_tabs[0]:
-        st.markdown("### Choose from Prebuilt Templates")
+    elif template_selected == "603010":
+        st.session_state.visual_builder["rule_name"] = "60/30/10 Split"
+        st.session_state.visual_builder["splits"] = {
+            "Implementation (SI)": 60,
+            "Influence": 30,
+            "Referral": 10
+        }
+        st.session_state.visual_builder["roles"] = ["Implementation (SI)", "Influence", "Referral"]
 
-        category = st.selectbox(
-            "Category",
-            ["industry", "deal_size", "maturity", "use_case", "base"],
-            format_func=lambda x: x.replace("_", " ").title()
+    elif template_selected == "winner":
+        st.session_state.visual_builder["rule_name"] = "Winner Takes All"
+        st.session_state.visual_builder["splits"] = {"First Touch": 100}
+        st.session_state.visual_builder["roles"] = ["First Touch"]
+
+    # Step 1: Which deals does this apply to?
+    st.markdown("### 1️⃣ Which deals should use this rule?")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        applies_to = st.radio(
+            "",
+            ["All deals", "Deals over a certain size", "Specific products"],
+            key="applies_to_radio",
+            horizontal=False
         )
 
-        templates = list_templates(category)
+        st.session_state.visual_builder["applies_to_all"] = (applies_to == "All deals")
 
-        if templates:
-            selected_template = st.selectbox(
-                "Template",
-                options=[t["id"] for t in templates],
-                format_func=lambda tid: next((t["name"] for t in templates if t["id"] == tid), tid)
+    with col2:
+        if applies_to == "Deals over a certain size":
+            min_size = st.slider(
+                "Minimum deal value",
+                min_value=0,
+                max_value=500000,
+                value=100000,
+                step=10000,
+                format="$%d",
+                key="min_deal_slider"
+            )
+            st.session_state.visual_builder["min_deal_size"] = min_size
+            st.info(f"This rule applies to deals worth **${min_size:,}** or more")
+        elif applies_to == "Specific products":
+            product_filter = st.text_input(
+                "Product/Service",
+                placeholder="e.g., Enterprise Plan, Professional Services",
+                key="product_filter"
             )
 
-            template_detail = get_template(selected_template)
+    st.markdown("---")
 
-            if template_detail:
-                st.markdown("#### Template Details")
-                st.markdown(f"**Name:** {template_detail['name']}")
-                st.markdown(f"**Description:** {template_detail['description']}")
-                st.markdown(f"**Model:** {template_detail['model_type']}")
-                st.json(template_detail["config"])
+    # Step 2: Build the split
+    st.markdown("### 2️⃣ How should we split credit among partners?")
 
-                if st.button("Apply Template", type="primary"):
-                    new_rule = AttributionRule(
-                        id=len(st.session_state.rules) + 1,
-                        name=template_detail["name"],
-                        model_type=AttributionModel(template_detail["model_type"]),
-                        config=template_detail["config"],
-                        split_constraint=SplitConstraint(template_detail["split_constraint"]),
-                        applies_to=template_detail.get("applies_to", {}),
-                        priority=100,
-                        active=True
-                    )
-                    st.session_state.rules.append(new_rule)
-                    st.success(f"✅ Applied template: {template_detail['name']}")
-                    st.rerun()
+    # Role selection
+    st.markdown("**Select partner roles:**")
+    selected_roles = st.multiselect(
+        "",
+        options=DEFAULT_PARTNER_ROLES,
+        default=st.session_state.visual_builder.get("roles", ["Implementation (SI)", "Referral"]),
+        key="role_multiselect",
+        help="Choose which partner roles should get credit"
+    )
 
-    # Manual Config sub-tab
-    with builder_tabs[1]:
-        st.markdown("### Manual Rule Configuration")
-        st.caption("For advanced users who want full control over rule JSON")
+    if len(selected_roles) == 0:
+        st.warning("⚠️ Please select at least one partner role")
+        st.stop()
 
-        with st.form("manual_rule_form"):
-            rule_name = st.text_input("Rule Name", value="Custom Rule")
+    st.session_state.visual_builder["roles"] = selected_roles
 
-            model_type = st.selectbox(
-                "Attribution Model",
-                options=[m.value for m in AttributionModel],
-                format_func=lambda x: x.replace('_', ' ').title()
+    st.markdown("**Adjust credit split:**")
+
+    # Visual sliders for each role
+    splits = {}
+    total_allocated = 0
+
+    for role in selected_roles:
+        # Get previous value or default
+        default_value = st.session_state.visual_builder["splits"].get(role, 100 // len(selected_roles))
+
+        col1, col2 = st.columns([3, 1])
+
+        with col1:
+            split_pct = st.slider(
+                f"{role}",
+                min_value=0,
+                max_value=100,
+                value=int(default_value),
+                step=5,
+                key=f"split_{role}",
+                help=f"Percentage of deal value attributed to {role}"
             )
 
-            st.markdown("**Model Configuration (JSON):**")
-            config_json = st.text_area(
-                "Config",
-                value='{"weights": {"Implementation (SI)": 0.5, "Influence": 0.3, "Referral": 0.2}}',
-                height=150,
-                help="Enter valid JSON configuration for the selected model"
+        with col2:
+            st.metric("", f"{split_pct}%", label_visibility="collapsed")
+
+        splits[role] = split_pct
+        total_allocated += split_pct
+
+    st.session_state.visual_builder["splits"] = splits
+
+    # Validation
+    st.markdown("---")
+
+    if total_allocated != 100:
+        st.error(f"❌ **Total is {total_allocated}%** (must equal 100%)")
+        st.markdown("Adjust the sliders above so they add up to 100%")
+    else:
+        st.success(f"✅ **Perfect!** Splits add up to 100%")
+
+    # Step 3: Live Preview
+    st.markdown("---")
+    st.markdown("### 3️⃣ Preview")
+
+    # Example deal preview
+    st.markdown("**Example: $100,000 Deal**")
+
+    preview_data = []
+    for role, pct in splits.items():
+        amount = 100000 * (pct / 100)
+        preview_data.append({
+            "Partner Role": role,
+            "Split": f"{pct}%",
+            "Amount": f"${amount:,.0f}"
+        })
+
+    # Show as a nice table
+    import pandas as pd
+    preview_df = pd.DataFrame(preview_data)
+    st.dataframe(preview_df, use_container_width=True, hide_index=True)
+
+    # Visual bar chart
+    import plotly.graph_objects as go
+
+    fig = go.Figure(data=[
+        go.Bar(
+            x=list(splits.values()),
+            y=list(splits.keys()),
+            orientation='h',
+            text=[f"{v}%" for v in splits.values()],
+            textposition='inside',
+            marker=dict(
+                color=['#3b82f6', '#8b5cf6', '#ec4899', '#f59e0b'][:len(splits)]
             )
+        )
+    ])
 
-            priority = st.number_input("Priority", min_value=1, max_value=1000, value=100)
+    fig.update_layout(
+        title="Credit Split Visualization",
+        xaxis_title="Percentage (%)",
+        yaxis_title="Partner Role",
+        height=300,
+        showlegend=False
+    )
 
-            if st.form_submit_button("Create Rule"):
-                try:
-                    config = json.loads(config_json)
-                    new_rule = AttributionRule(
-                        id=len(st.session_state.rules) + 1,
-                        name=rule_name,
-                        model_type=AttributionModel(model_type),
-                        config=config,
-                        split_constraint=SplitConstraint.MUST_SUM_TO_100,
-                        applies_to={},
-                        priority=priority,
-                        active=True
-                    )
-                    st.session_state.rules.append(new_rule)
-                    st.success(f"✅ Created rule: {rule_name}")
-                    st.rerun()
-                except json.JSONDecodeError as e:
-                    st.error(f"❌ Invalid JSON: {str(e)}")
-                except Exception as e:
-                    st.error(f"❌ Error creating rule: {str(e)}")
+    st.plotly_chart(fig, use_container_width=True)
 
+    # Step 4: Save
+    st.markdown("---")
+    st.markdown("### 4️⃣ Save Your Rule")
 
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        rule_name = st.text_input(
+            "Rule Name",
+            value=st.session_state.visual_builder.get("rule_name", "My Custom Rule"),
+            placeholder="e.g., '60/30/10 Enterprise Split'",
+            key="rule_name_input"
+        )
+
+    with col2:
+        st.markdown("")  # Spacing
+        st.markdown("")
+
+        if total_allocated == 100 and rule_name:
+            if st.button("💾 Save Rule", type="primary", use_container_width=True, key="save_visual_rule"):
+                # Create the rule
+                new_rule = AttributionRule(
+                    id=len(st.session_state.rules) + 1,
+                    name=rule_name,
+                    model_type=AttributionModel.ROLE_WEIGHTED,
+                    config={"weights": {role: pct/100 for role, pct in splits.items()}},
+                    split_constraint=SplitConstraint.MUST_SUM_TO_100,
+                    applies_to={
+                        "min_value": st.session_state.visual_builder.get("min_deal_size", 0)
+                    } if not st.session_state.visual_builder.get("applies_to_all", True) else {},
+                    priority=100,
+                    active=True
+                )
+
+                st.session_state.rules.append(new_rule)
+
+                # Recalculate attribution
+                with st.spinner("💡 Applying your new rule..."):
+                    count = calculate_attribution_for_all_targets()
+
+                st.success(f"✅ Rule '{rule_name}' saved! Created {count} ledger entries")
+                st.balloons()
+
+                # Reset builder
+                st.session_state.visual_builder = {
+                    "rule_name": "My Custom Rule",
+                    "roles": ["Implementation (SI)", "Referral"],
+                    "splits": {"Implementation (SI)": 70, "Referral": 30},
+                    "applies_to_all": True,
+                    "min_deal_size": 0
+                }
+
+                st.rerun()
+        else:
+            st.button("💾 Save Rule", type="primary", use_container_width=True, disabled=True, key="save_visual_rule_disabled")
+            if total_allocated != 100:
+                st.caption("⚠️ Fix the split percentages first")
+            elif not rule_name:
+                st.caption("⚠️ Enter a rule name first")
+
+    # Advanced: Natural Language Option
+    with st.expander("💬 Or describe your rule in plain English (Advanced)", expanded=False):
+        st.markdown("**Describe your attribution model:**")
+        nl_input = st.text_area(
+            "",
+            placeholder="e.g., 'Give 70% to SI partners and 30% to referral partners for enterprise deals'",
+            height=100,
+            key="nl_advanced"
+        )
+
+        if st.button("🚀 Generate from Description", key="nl_generate"):
+            if nl_input:
+                st.info("💡 Natural language parsing coming soon! For now, use the visual builder above.")
+            else:
+                st.warning("Please enter a description first")
 # ============================================================================
-# TAB 5: RULES & TEMPLATES (was TAB 3)
+# TAB 7: RULES & TEMPLATES
 # ============================================================================
 
-with tabs[5]:
+with tabs[7]:
     st.title("📋 Active Rules & Templates")
 
     if st.session_state.rules:
@@ -1759,10 +1992,10 @@ with tabs[5]:
 
 
 # ============================================================================
-# TAB 6: MEASUREMENT WORKFLOWS
+# TAB 5: MEASUREMENT WORKFLOWS
 # ============================================================================
 
-with tabs[6]:
+with tabs[5]:
     st.title("🔄 Measurement Workflows")
     st.caption("Configure how your company measures partner contribution")
 
@@ -2068,12 +2301,30 @@ with tabs[6]:
 
 
 # ============================================================================
-# TAB 7: DEAL DRILLDOWN (was TAB 6)
+# TAB 3: DEAL DRILLDOWN
 # ============================================================================
 
-with tabs[7]:
-    st.title("💰 Deal Drilldown")
-    st.caption("Detailed attribution breakdown for individual deals - perfect for partner dispute resolution")
+with tabs[3]:
+    col_title, col_export = st.columns([4, 1])
+
+    with col_title:
+        st.title("💰 Deal Drilldown")
+        st.caption("Detailed attribution breakdown for individual deals - perfect for partner dispute resolution")
+
+    with col_export:
+        st.markdown("") # Spacing
+        if st.button("📥 Export CSV", key="deal_export", use_container_width=True):
+            filtered_ledger = apply_global_filters(st.session_state.ledger)
+            csv_data = export_ledger_to_csv(filtered_ledger)
+            st.download_button(
+                "Download Data",
+                csv_data,
+                "deal_drilldown.csv",
+                "text/csv",
+                key="deal_download"
+            )
+
+    st.markdown("---")
 
     if not st.session_state.targets:
         st.info("No deals available. Load data first in the Data Import tab.")
@@ -2267,7 +2518,7 @@ with tabs[7]:
                                 value=current_percent,
                                 step=0.1,
                                 format="%.1f",
-                                key=f"override_{entry.partner_id}_{selected_target_id}",
+                                key=f"override_{entry.partner_id}_{selected_target_id}_{entry.id}",
                                 label_visibility="collapsed"
                             )
                             override_splits[entry.partner_id] = new_percent / 100.0
