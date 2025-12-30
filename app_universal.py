@@ -22,6 +22,11 @@ import json
 import calendar
 from datetime import datetime, date, timedelta
 from typing import Dict, List, Any, Optional
+import warnings
+
+# Suppress deprecation warnings
+warnings.filterwarnings('ignore', message='.*Plotly configuration.*')
+warnings.filterwarnings('ignore', message='.*label.*got an empty value.*')
 
 # New universal architecture imports
 from models_new import (

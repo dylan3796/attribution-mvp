@@ -18,6 +18,11 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import hashlib
 import secrets
+import warnings
+
+# Suppress deprecation warnings
+warnings.filterwarnings('ignore', message='.*Plotly configuration.*')
+warnings.filterwarnings('ignore', message='.*label.*got an empty value.*')
 
 from models_new import LedgerEntry, AttributionTarget, PartnerTouchpoint, TouchpointType
 from dashboards import create_revenue_over_time_chart
