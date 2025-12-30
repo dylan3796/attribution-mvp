@@ -427,11 +427,11 @@ tabs = st.tabs([
     "🤝 Partner Management",       # Tab 2: Partner health & alerts
     "💰 Deal Drilldown",           # Tab 3: Dispute resolution
 
-    # ⚙️ SETUP & CONFIGURATION (Admin)
-    "📥 Data Import",              # Tab 4: Upload data
-    "🔄 Measurement Workflows",    # Tab 5: Configure attribution methods
-    "⚙️ Rule Builder",             # Tab 6: Create attribution rules
-    "📋 Rules & Templates",        # Tab 7: Manage rules
+    # ⚙️ SETUP & CONFIGURATION (Admin - Ordered by ease of use)
+    "📥 Data Import",              # Tab 4: Upload data (first step)
+    "🎨 Rule Builder",             # Tab 5: Visual rule creator (easy, no-code)
+    "📋 Rules & Templates",        # Tab 6: Manage existing rules
+    "🔄 Measurement Workflows",    # Tab 7: Advanced attribution methods
 
     # 🔍 ADVANCED (Audit & Deep Dive)
     "🔍 Ledger Explorer"           # Tab 8: Immutable audit trail
@@ -1678,10 +1678,10 @@ Perfect for exploring features and presenting to stakeholders.
 
 # ============================================================================
 # ============================================================================
-# TAB 6: VISUAL RULE BUILDER (SIMPLIFIED UX)
+# TAB 5: VISUAL RULE BUILDER (SIMPLIFIED UX)
 # ============================================================================
 
-with tabs[6]:
+with tabs[5]:
     st.title("🎨 Build Your Attribution Rule")
     st.caption("No coding required - just drag sliders and see results instantly")
 
@@ -1962,10 +1962,10 @@ with tabs[6]:
             else:
                 st.warning("Please enter a description first")
 # ============================================================================
-# TAB 7: RULES & TEMPLATES
+# TAB 6: RULES & TEMPLATES
 # ============================================================================
 
-with tabs[7]:
+with tabs[6]:
     st.title("📋 Active Rules & Templates")
 
     if st.session_state.rules:
@@ -1992,10 +1992,10 @@ with tabs[7]:
 
 
 # ============================================================================
-# TAB 5: MEASUREMENT WORKFLOWS
+# TAB 7: MEASUREMENT WORKFLOWS
 # ============================================================================
 
-with tabs[5]:
+with tabs[7]:
     st.title("🔄 Measurement Workflows")
     st.caption("Configure how your company measures partner contribution")
 
