@@ -14,19 +14,19 @@ with tabs[6]:
 
     template_selected = None
     with template_cols[0]:
-        if st.button("⚡ Equal Split\n*All partners get equal credit*", use_container_width=True, key="tmpl_equal"):
+        if st.button("⚡ Equal Split\n*All partners get equal credit*", width='stretch', key="tmpl_equal"):
             template_selected = "equal"
 
     with template_cols[1]:
-        if st.button("🎯 60/30/10 Split\n*SI 60%, Influence 30%, Referral 10%*", use_container_width=True, key="tmpl_603010"):
+        if st.button("🎯 60/30/10 Split\n*SI 60%, Influence 30%, Referral 10%*", width='stretch', key="tmpl_603010"):
             template_selected = "603010"
 
     with template_cols[2]:
-        if st.button("🏆 Winner Takes All\n*First partner gets 100%*", use_container_width=True, key="tmpl_winner"):
+        if st.button("🏆 Winner Takes All\n*First partner gets 100%*", width='stretch', key="tmpl_winner"):
             template_selected = "winner"
 
     with template_cols[3]:
-        if st.button("🔨 Custom\n*Build your own rule*", use_container_width=True, key="tmpl_custom"):
+        if st.button("🔨 Custom\n*Build your own rule*", width='stretch', key="tmpl_custom"):
             template_selected = "custom"
 
     st.markdown("---")
@@ -144,7 +144,7 @@ with tabs[6]:
             )
 
         with col2:
-            st.metric("", f"{split_pct}%", label_visibility="collapsed")
+            st.metric("Percentage", f"{split_pct}%", label_visibility="collapsed")
 
         splits[role] = split_pct
         total_allocated += split_pct
@@ -179,7 +179,7 @@ with tabs[6]:
     # Show as a nice table
     import pandas as pd
     preview_df = pd.DataFrame(preview_data)
-    st.dataframe(preview_df, use_container_width=True, hide_index=True)
+    st.dataframe(preview_df, width='stretch', hide_index=True)
 
     # Visual bar chart
     import plotly.graph_objects as go
@@ -205,7 +205,7 @@ with tabs[6]:
         showlegend=False
     )
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Step 4: Save
     st.markdown("---")
@@ -226,7 +226,7 @@ with tabs[6]:
         st.markdown("")
 
         if total_allocated == 100 and rule_name:
-            if st.button("💾 Save Rule", type="primary", use_container_width=True, key="save_visual_rule"):
+            if st.button("💾 Save Rule", type="primary", width='stretch', key="save_visual_rule"):
                 # Create the rule
                 new_rule = AttributionRule(
                     id=len(st.session_state.rules) + 1,
@@ -261,7 +261,7 @@ with tabs[6]:
 
                 st.rerun()
         else:
-            st.button("💾 Save Rule", type="primary", use_container_width=True, disabled=True, key="save_visual_rule_disabled")
+            st.button("💾 Save Rule", type="primary", width='stretch', disabled=True, key="save_visual_rule_disabled")
             if total_allocated != 100:
                 st.caption("⚠️ Fix the split percentages first")
             elif not rule_name:

@@ -468,7 +468,7 @@ with st.sidebar:
         st.info(f"🎯 {active_filters} filter(s) active")
 
     # Reset filters button
-    if st.button("🔄 Reset Filters", use_container_width=True):
+    if st.button("🔄 Reset Filters", width='stretch'):
         st.session_state.global_filters = {
             "date_range": (datetime.now() - timedelta(days=90), datetime.now()),
             "selected_partners": [],
@@ -534,7 +534,7 @@ with tabs[0]:
 
     with col_export:
         st.markdown("") # Spacing
-        if st.button("📥 Export CSV", key="exec_export", use_container_width=True):
+        if st.button("📥 Export CSV", key="exec_export", width='stretch'):
             filtered_ledger = apply_global_filters(st.session_state.ledger)
             csv_data = export_ledger_to_csv(filtered_ledger)
             st.download_button(
@@ -547,7 +547,7 @@ with tabs[0]:
 
     with col_customize:
         st.markdown("") # Spacing
-        with st.popover("⚙️ Metrics", use_container_width=True):
+        with st.popover("⚙️ Metrics", width='stretch'):
             st.markdown("**Show/Hide Metrics**")
             st.session_state.visible_metrics["revenue"] = st.checkbox(
                 "Total Revenue",
@@ -702,14 +702,14 @@ with tabs[0]:
         with chart_col1:
             st.plotly_chart(
                 create_revenue_over_time_chart(revenue_df),
-                use_container_width=True,
+                width='stretch',
                 key="revenue_trend"
             )
 
         with chart_col2:
             st.plotly_chart(
                 create_attribution_pie_chart(attribution_agg),
-                use_container_width=True,
+                width='stretch',
                 key="attribution_pie"
             )
 
@@ -722,7 +722,7 @@ with tabs[0]:
         with chart_col3:
             st.plotly_chart(
                 create_partner_performance_bar_chart(attribution_agg),
-                use_container_width=True,
+                width='stretch',
                 key="partner_performance"
             )
 
@@ -735,7 +735,7 @@ with tabs[0]:
 
             st.plotly_chart(
                 create_partner_role_distribution(touchpoint_roles_df),
-                use_container_width=True,
+                width='stretch',
                 key="role_distribution"
             )
 
@@ -748,7 +748,7 @@ with tabs[0]:
         with chart_col5:
             st.plotly_chart(
                 create_deal_value_distribution(revenue_df),
-                use_container_width=True,
+                width='stretch',
                 key="deal_value_dist"
             )
 
@@ -756,7 +756,7 @@ with tabs[0]:
             # Attribution Waterfall
             st.plotly_chart(
                 create_attribution_waterfall(attribution_agg, total_revenue),
-                use_container_width=True,
+                width='stretch',
                 key="waterfall"
             )
 
@@ -774,7 +774,7 @@ with tabs[0]:
                     data=csv_data,
                     file_name=f"revenue_{start_date}_to_{end_date}.csv",
                     mime="text/csv",
-                    use_container_width=True
+                    width='stretch'
                 )
 
         with export_cols[1]:
@@ -788,7 +788,7 @@ with tabs[0]:
                     data=excel_data,
                     file_name=f"dashboard_{start_date}_to_{end_date}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
+                    width='stretch'
                 )
 
         with export_cols[2]:
@@ -812,7 +812,7 @@ with tabs[0]:
                         data=executive_pdf,
                         file_name=f"attribution_executive_report_{datetime.now().strftime('%Y%m%d')}.pdf",
                         mime="application/pdf",
-                        use_container_width=True,
+                        width='stretch',
                         help="Beautiful executive report with charts and insights"
                     )
                 except Exception as e:
@@ -835,7 +835,7 @@ with tabs[0]:
             top_10 = attribution_agg.nlargest(10, "attributed_amount")
             st.dataframe(
                 top_10[["partner_name", "attributed_amount", "avg_split_percent", "accounts_influenced"]],
-                use_container_width=True
+                width='stretch'
             )
 
         # PARTNER-SPECIFIC REPORTS
@@ -877,7 +877,7 @@ with tabs[0]:
                     data=partner_pdf,
                     file_name=f"partner_statement_{selected_partner_id}_{datetime.now().strftime('%Y%m%d')}.pdf",
                     mime="application/pdf",
-                    use_container_width=True,
+                    width='stretch',
                     help="PDF statement showing this partner's attribution details"
                 )
 
@@ -903,7 +903,7 @@ with tabs[0]:
                     data=bulk_zip,
                     file_name=f"partner_statements_bulk_{datetime.now().strftime('%Y%m%d')}.zip",
                     mime="application/zip",
-                    use_container_width=True,
+                    width='stretch',
                     help=f"ZIP file containing {num_partners_with_attr} individual partner PDFs"
                 )
         else:
@@ -945,7 +945,7 @@ with tabs[1]:
 
     with col_export:
         st.markdown("") # Spacing
-        if st.button("📥 Export CSV", key="sales_export", use_container_width=True):
+        if st.button("📥 Export CSV", key="sales_export", width='stretch'):
             filtered_ledger = apply_global_filters(st.session_state.ledger)
             csv_data = export_ledger_to_csv(filtered_ledger)
             st.download_button(
@@ -1156,7 +1156,7 @@ with tabs[1]:
             if comparison:
                 try:
                     fig = create_period_comparison_chart(comparison, metric_type="revenue")
-                    st.plotly_chart(fig, use_container_width=True, key="sales_comparison_chart")
+                    st.plotly_chart(fig, width='stretch', key="sales_comparison_chart")
                 except Exception as e:
                     st.error(f"Error creating comparison chart: {str(e)}")
             else:
@@ -1169,7 +1169,7 @@ with tabs[1]:
                     ]
                     st.plotly_chart(
                         create_revenue_over_time_chart(filtered_revenue),
-                        use_container_width=True,
+                        width='stretch',
                         key="sales_revenue_trend"
                     )
 
@@ -1191,7 +1191,7 @@ with tabs[1]:
 
                     st.plotly_chart(
                         create_partner_performance_bar_chart(partner_summary),
-                        use_container_width=True,
+                        width='stretch',
                         key="sales_partner_performance"
                     )
 
@@ -1224,14 +1224,14 @@ with tabs[1]:
 
                     st.dataframe(
                         pd.DataFrame(movers_data),
-                        use_container_width=True,
+                        width='stretch',
                         hide_index=True
                     )
 
                     # Also show chart
                     st.plotly_chart(
                         create_top_movers_chart(movers, limit=8),
-                        use_container_width=True,
+                        width='stretch',
                         key="sales_top_movers_chart"
                     )
                 else:
@@ -1256,7 +1256,7 @@ with tabs[2]:
 
     with col_export:
         st.markdown("") # Spacing
-        if st.button("📥 Export CSV", key="mgmt_export", use_container_width=True):
+        if st.button("📥 Export CSV", key="mgmt_export", width='stretch'):
             filtered_ledger = apply_global_filters(st.session_state.ledger)
             csv_data = export_ledger_to_csv(filtered_ledger)
             st.download_button(
@@ -1324,7 +1324,7 @@ with tabs[2]:
             with health_col1:
                 # Large health gauge
                 fig = create_health_gauge(health_score.total_score, title="Health Score")
-                st.plotly_chart(fig, use_container_width=True, key="mgmt_health_gauge")
+                st.plotly_chart(fig, width='stretch', key="mgmt_health_gauge")
 
             with health_col2:
                 # Health details card
@@ -1463,7 +1463,7 @@ with tabs[2]:
                     })
 
                     fig = create_partner_revenue_trend(selected_partner_name, trend_df)
-                    st.plotly_chart(fig, use_container_width=True, key="mgmt_revenue_trend")
+                    st.plotly_chart(fig, width='stretch', key="mgmt_revenue_trend")
                 else:
                     st.info("No revenue history available")
             except Exception as e:
@@ -1487,7 +1487,7 @@ with tabs[2]:
                     })
 
                     fig = create_partner_activity_trend(selected_partner_name, activity_df)
-                    st.plotly_chart(fig, use_container_width=True, key="mgmt_activity_trend")
+                    st.plotly_chart(fig, width='stretch', key="mgmt_activity_trend")
                 else:
                     st.info("No activity history available")
             except Exception as e:
@@ -1527,7 +1527,7 @@ with tabs[2]:
             recent_deals_sorted = sorted(recent_deals, key=lambda d: d["Close Date"], reverse=True)[:10]
             st.dataframe(
                 pd.DataFrame(recent_deals_sorted),
-                use_container_width=True,
+                width='stretch',
                 hide_index=True
             )
         else:
@@ -1561,7 +1561,7 @@ Perfect for exploring features and presenting to stakeholders.
         """)
 
     with demo_col2:
-        if st.button("🚀 Load Demo Data", type="primary", use_container_width=True):
+        if st.button("🚀 Load Demo Data", type="primary", width='stretch'):
             with st.spinner("Generating demo dataset..."):
                 # Generate demo data
                 demo_targets, demo_touchpoints, demo_rules, demo_ledger = generate_complete_demo_data()
@@ -1626,7 +1626,7 @@ Perfect for exploring features and presenting to stakeholders.
             preview_df = pd.read_csv(pd.io.common.BytesIO(csv_content))
 
             st.markdown("#### Preview (First 5 Rows)")
-            st.dataframe(preview_df.head(), use_container_width=True)
+            st.dataframe(preview_df.head(), width='stretch')
 
             # Ingest
             if st.button("Import Data"):
@@ -1685,7 +1685,7 @@ Perfect for exploring features and presenting to stakeholders.
                 data=generate_csv_template("salesforce"),
                 file_name="salesforce_template.csv",
                 mime="text/csv",
-                use_container_width=True
+                width='stretch'
             )
 
         with template_cols[1]:
@@ -1695,7 +1695,7 @@ Perfect for exploring features and presenting to stakeholders.
                 data=generate_csv_template("hubspot"),
                 file_name="hubspot_template.csv",
                 mime="text/csv",
-                use_container_width=True
+                width='stretch'
             )
 
         with template_cols[2]:
@@ -1705,7 +1705,7 @@ Perfect for exploring features and presenting to stakeholders.
                 data=generate_csv_template("minimal"),
                 file_name="minimal_template.csv",
                 mime="text/csv",
-                use_container_width=True
+                width='stretch'
             )
 
     # Manual Entry sub-tab
@@ -1776,19 +1776,19 @@ with tabs[5]:
 
     template_selected = None
     with template_cols[0]:
-        if st.button("⚡ Equal Split\n*All partners get equal credit*", use_container_width=True, key="tmpl_equal"):
+        if st.button("⚡ Equal Split\n*All partners get equal credit*", width='stretch', key="tmpl_equal"):
             template_selected = "equal"
 
     with template_cols[1]:
-        if st.button("🎯 60/30/10 Split\n*SI 60%, Influence 30%, Referral 10%*", use_container_width=True, key="tmpl_603010"):
+        if st.button("🎯 60/30/10 Split\n*SI 60%, Influence 30%, Referral 10%*", width='stretch', key="tmpl_603010"):
             template_selected = "603010"
 
     with template_cols[2]:
-        if st.button("🏆 Winner Takes All\n*First partner gets 100%*", use_container_width=True, key="tmpl_winner"):
+        if st.button("🏆 Winner Takes All\n*First partner gets 100%*", width='stretch', key="tmpl_winner"):
             template_selected = "winner"
 
     with template_cols[3]:
-        if st.button("🔨 Custom\n*Build your own rule*", use_container_width=True, key="tmpl_custom"):
+        if st.button("🔨 Custom\n*Build your own rule*", width='stretch', key="tmpl_custom"):
             template_selected = "custom"
 
     st.markdown("---")
@@ -1906,7 +1906,7 @@ with tabs[5]:
             )
 
         with col2:
-            st.metric("", f"{split_pct}%", label_visibility="collapsed")
+            st.metric("Percentage", f"{split_pct}%", label_visibility="collapsed")
 
         splits[role] = split_pct
         total_allocated += split_pct
@@ -1941,7 +1941,7 @@ with tabs[5]:
     # Show as a nice table
     import pandas as pd
     preview_df = pd.DataFrame(preview_data)
-    st.dataframe(preview_df, use_container_width=True, hide_index=True)
+    st.dataframe(preview_df, width='stretch', hide_index=True)
 
     # Visual bar chart
     import plotly.graph_objects as go
@@ -1967,7 +1967,7 @@ with tabs[5]:
         showlegend=False
     )
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Step 4: Save
     st.markdown("---")
@@ -1988,7 +1988,7 @@ with tabs[5]:
         st.markdown("")
 
         if total_allocated == 100 and rule_name:
-            if st.button("💾 Save Rule", type="primary", use_container_width=True, key="save_visual_rule"):
+            if st.button("💾 Save Rule", type="primary", width='stretch', key="save_visual_rule"):
                 # Create the rule
                 new_rule = AttributionRule(
                     id=len(st.session_state.rules) + 1,
@@ -2023,7 +2023,7 @@ with tabs[5]:
 
                 st.rerun()
         else:
-            st.button("💾 Save Rule", type="primary", use_container_width=True, disabled=True, key="save_visual_rule_disabled")
+            st.button("💾 Save Rule", type="primary", width='stretch', disabled=True, key="save_visual_rule_disabled")
             if total_allocated != 100:
                 st.caption("⚠️ Fix the split percentages first")
             elif not rule_name:
@@ -2396,7 +2396,7 @@ with tabs[3]:
 
     with col_export:
         st.markdown("") # Spacing
-        if st.button("📥 Export CSV", key="deal_export", use_container_width=True):
+        if st.button("📥 Export CSV", key="deal_export", width='stretch'):
             filtered_ledger = apply_global_filters(st.session_state.ledger)
             csv_data = export_ledger_to_csv(filtered_ledger)
             st.download_button(
@@ -2469,7 +2469,7 @@ with tabs[3]:
                     "Days Before Close": (selected_target.timestamp - tp.timestamp).days if (selected_target.timestamp and tp.timestamp) else "N/A"
                 })
 
-            st.dataframe(pd.DataFrame(touchpoint_data), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(touchpoint_data), width='stretch', hide_index=True)
         else:
             st.warning("No partner touchpoints recorded for this deal.")
 
@@ -2519,7 +2519,7 @@ with tabs[3]:
                     "Calculated": entry.calculation_timestamp.strftime("%Y-%m-%d %H:%M")
                 })
 
-            st.dataframe(pd.DataFrame(attribution_data), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(attribution_data), width='stretch', hide_index=True)
 
             # Visualization
             st.markdown("#### Attribution Split Visualization")
@@ -2538,7 +2538,7 @@ with tabs[3]:
                 title=f"Attribution Split - {selected_target.external_id}",
                 hole=0.4
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
             # Audit Trail
             with st.expander("🔍 View Detailed Audit Trail"):
@@ -2629,11 +2629,11 @@ with tabs[3]:
                             "Apply Override",
                             type="primary" if not submit_disabled else None,
                             disabled=submit_disabled or not override_reason,
-                            use_container_width=True
+                            width='stretch'
                         )
 
                     with submit_col2:
-                        if st.form_submit_button("Reset to Calculated", use_container_width=True):
+                        if st.form_submit_button("Reset to Calculated", width='stretch'):
                             st.info("Recalculate attribution in the Ledger Explorer to restore automatic calculations.")
 
                 if submit_override and override_reason:
@@ -2702,7 +2702,7 @@ with tabs[3]:
                         data=csv_data,
                         file_name=f"deal_{selected_target.external_id}_attribution.csv",
                         mime="text/csv",
-                        use_container_width=True
+                        width='stretch'
                     )
 
 
@@ -2736,7 +2736,7 @@ with tabs[8]:
             for entry in st.session_state.ledger[-100:]  # Show last 100
         ])
 
-        st.dataframe(ledger_df, use_container_width=True)
+        st.dataframe(ledger_df, width='stretch')
 
         # Export ledger
         if st.button("Download Full Ledger (CSV)"):
