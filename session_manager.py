@@ -416,3 +416,40 @@ class SessionManager:
         self.add_ledger_entries_bulk(new_entries)
 
         return len(new_entries)
+
+    # ========================================================================
+    # Approval Workflow Methods
+    # ========================================================================
+
+    def get_all_touchpoints(self) -> List[PartnerTouchpoint]:
+        """Get all touchpoints from database."""
+        return self.repo.get_all_touchpoints()
+
+    def get_pending_approvals(self) -> List[PartnerTouchpoint]:
+        """Get all touchpoints pending approval."""
+        return self.repo.get_pending_approvals()
+
+    def approve_touchpoint(self, touchpoint_id: int, approved_by: str) -> None:
+        """Approve a touchpoint."""
+        self.repo.approve_touchpoint(touchpoint_id, approved_by)
+
+        # Update session state
+        for tp in st.session_state.touchpoints:
+            if tp.id == touchpoint_id:
+                tp.approved_by = approved_by
+                tp.approval_timestamp = datetime.now()
+                break
+
+    def reject_touchpoint(self, touchpoint_id: int, rejected_by: str, reason: str) -> None:
+        """Reject a touchpoint."""
+        self.repo.reject_touchpoint(touchpoint_id, rejected_by, reason)
+
+        # Update session state
+        for tp in st.session_state.touchpoints:
+            if tp.id == touchpoint_id:
+                tp.deal_reg_status = "rejected"
+                if not tp.metadata:
+                    tp.metadata = {}
+                tp.metadata['rejected_by'] = rejected_by
+                tp.metadata['rejection_reason'] = reason
+                break
