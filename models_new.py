@@ -635,3 +635,78 @@ def list_rule_templates() -> List[Dict[str, Any]]:
         }
         for name, template in RULE_TEMPLATES.items()
     ]
+
+
+# ============================================================================
+# Period Management
+# ============================================================================
+
+class PeriodType(str, Enum):
+    """Type of attribution period"""
+    MONTHLY = "monthly"
+    QUARTERLY = "quarterly"
+    ANNUAL = "annual"
+    CUSTOM = "custom"
+
+
+class PeriodStatus(str, Enum):
+    """Status of an attribution period"""
+    OPEN = "open"            # Active, calculations can be modified
+    CLOSED = "closed"        # Closed for reporting, can still recalculate
+    LOCKED = "locked"        # Fully locked, no changes allowed
+
+
+@dataclass
+class AttributionPeriod:
+    """
+    Represents a time period for attribution calculations.
+
+    Periods allow companies to:
+    - Close attribution calculations for a time period
+    - Lock historical data to prevent retroactive changes
+    - Generate period-based reports
+    - Track period-over-period performance
+    """
+    id: int
+    organization_id: str
+    name: str                        # e.g., "Q1 2024", "January 2024"
+    period_type: PeriodType
+    start_date: datetime
+    end_date: datetime
+    status: PeriodStatus = PeriodStatus.OPEN
+
+    # Metadata
+    closed_at: Optional[datetime] = None
+    closed_by: Optional[str] = None
+    locked_at: Optional[datetime] = None
+    locked_by: Optional[str] = None
+
+    # Attribution summary (calculated when closed)
+    total_revenue: float = 0.0
+    total_deals: int = 0
+    total_partners: int = 0
+
+    # Audit trail
+    created_at: datetime = field(default_factory=datetime.now)
+    created_by: Optional[str] = None
+    notes: Optional[str] = None
+
+    def is_open(self) -> bool:
+        """Check if period is open for modifications"""
+        return self.status == PeriodStatus.OPEN
+
+    def is_closed(self) -> bool:
+        """Check if period is closed"""
+        return self.status in [PeriodStatus.CLOSED, PeriodStatus.LOCKED]
+
+    def is_locked(self) -> bool:
+        """Check if period is locked"""
+        return self.status == PeriodStatus.LOCKED
+
+    def can_recalculate(self) -> bool:
+        """Check if attribution can be recalculated"""
+        return self.status != PeriodStatus.LOCKED
+
+    def contains_date(self, check_date: datetime) -> bool:
+        """Check if a date falls within this period"""
+        return self.start_date <= check_date <= self.end_date

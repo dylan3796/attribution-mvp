@@ -298,6 +298,29 @@ class Database:
         );
         """)
 
+        # Attribution periods (NEW - Phase 2.0)
+        self.run_sql("""
+        CREATE TABLE IF NOT EXISTS attribution_period (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            organization_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            period_type TEXT NOT NULL,
+            start_date TEXT NOT NULL,
+            end_date TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'open',
+            closed_at TEXT,
+            closed_by TEXT,
+            locked_at TEXT,
+            locked_by TEXT,
+            total_revenue REAL DEFAULT 0.0,
+            total_deals INTEGER DEFAULT 0,
+            total_partners INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL,
+            created_by TEXT,
+            notes TEXT
+        );
+        """)
+
         # Indexes for performance
         self.run_sql("CREATE INDEX IF NOT EXISTS idx_touchpoint_target ON partner_touchpoint(target_id);")
         self.run_sql("CREATE INDEX IF NOT EXISTS idx_touchpoint_partner ON partner_touchpoint(partner_id);")
@@ -305,6 +328,8 @@ class Database:
         self.run_sql("CREATE INDEX IF NOT EXISTS idx_ledger_target ON ledger_entry(target_id);")
         self.run_sql("CREATE INDEX IF NOT EXISTS idx_ledger_partner ON ledger_entry(partner_id);")
         self.run_sql("CREATE INDEX IF NOT EXISTS idx_workflow_company ON measurement_workflow(company_id);")
+        self.run_sql("CREATE INDEX IF NOT EXISTS idx_period_org ON attribution_period(organization_id);")
+        self.run_sql("CREATE INDEX IF NOT EXISTS idx_period_dates ON attribution_period(start_date, end_date);")
 
         # Apply migrations
         self._apply_migrations()

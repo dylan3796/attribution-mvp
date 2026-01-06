@@ -679,3 +679,221 @@ class AttributionRepository:
         cursor = self.conn.cursor()
         cursor.execute("DELETE FROM partners WHERE partner_id = ?", (partner_id,))
         self.conn.commit()
+
+    # ========================================================================
+    # Attribution Periods
+    # ========================================================================
+
+    def create_period(self, period: 'AttributionPeriod') -> int:
+        """Create a new attribution period and return its ID."""
+        from models_new import AttributionPeriod, PeriodType, PeriodStatus
+
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            INSERT INTO attribution_period (
+                organization_id, name, period_type, start_date, end_date,
+                status, closed_at, closed_by, locked_at, locked_by,
+                total_revenue, total_deals, total_partners,
+                created_at, created_by, notes
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            period.organization_id,
+            period.name,
+            period.period_type.value,
+            period.start_date.isoformat(),
+            period.end_date.isoformat(),
+            period.status.value,
+            period.closed_at.isoformat() if period.closed_at else None,
+            period.closed_by,
+            period.locked_at.isoformat() if period.locked_at else None,
+            period.locked_by,
+            period.total_revenue,
+            period.total_deals,
+            period.total_partners,
+            period.created_at.isoformat(),
+            period.created_by,
+            period.notes
+        ))
+        self.conn.commit()
+        return cursor.lastrowid
+
+    def get_period(self, period_id: int) -> Optional['AttributionPeriod']:
+        """Get a period by ID."""
+        from models_new import AttributionPeriod, PeriodType, PeriodStatus
+
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM attribution_period WHERE id = ?", (period_id,))
+        row = cursor.fetchone()
+
+        if not row:
+            return None
+
+        return AttributionPeriod(
+            id=row['id'],
+            organization_id=row['organization_id'],
+            name=row['name'],
+            period_type=PeriodType(row['period_type']),
+            start_date=datetime.fromisoformat(row['start_date']),
+            end_date=datetime.fromisoformat(row['end_date']),
+            status=PeriodStatus(row['status']),
+            closed_at=datetime.fromisoformat(row['closed_at']) if row['closed_at'] else None,
+            closed_by=row['closed_by'],
+            locked_at=datetime.fromisoformat(row['locked_at']) if row['locked_at'] else None,
+            locked_by=row['locked_by'],
+            total_revenue=row['total_revenue'],
+            total_deals=row['total_deals'],
+            total_partners=row['total_partners'],
+            created_at=datetime.fromisoformat(row['created_at']),
+            created_by=row['created_by'],
+            notes=row['notes']
+        )
+
+    def get_all_periods(self, organization_id: str) -> List['AttributionPeriod']:
+        """Get all periods for an organization."""
+        from models_new import AttributionPeriod, PeriodType, PeriodStatus
+
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT * FROM attribution_period
+            WHERE organization_id = ?
+            ORDER BY start_date DESC
+        """, (organization_id,))
+        rows = cursor.fetchall()
+
+        periods = []
+        for row in rows:
+            periods.append(AttributionPeriod(
+                id=row['id'],
+                organization_id=row['organization_id'],
+                name=row['name'],
+                period_type=PeriodType(row['period_type']),
+                start_date=datetime.fromisoformat(row['start_date']),
+                end_date=datetime.fromisoformat(row['end_date']),
+                status=PeriodStatus(row['status']),
+                closed_at=datetime.fromisoformat(row['closed_at']) if row['closed_at'] else None,
+                closed_by=row['closed_by'],
+                locked_at=datetime.fromisoformat(row['locked_at']) if row['locked_at'] else None,
+                locked_by=row['locked_by'],
+                total_revenue=row['total_revenue'],
+                total_deals=row['total_deals'],
+                total_partners=row['total_partners'],
+                created_at=datetime.fromisoformat(row['created_at']),
+                created_by=row['created_by'],
+                notes=row['notes']
+            ))
+
+        return periods
+
+    def get_current_period(self, organization_id: str) -> Optional['AttributionPeriod']:
+        """Get the current open period for an organization."""
+        from models_new import AttributionPeriod, PeriodType, PeriodStatus
+
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT * FROM attribution_period
+            WHERE organization_id = ? AND status = 'open'
+            ORDER BY start_date DESC
+            LIMIT 1
+        """, (organization_id,))
+        row = cursor.fetchone()
+
+        if not row:
+            return None
+
+        return AttributionPeriod(
+            id=row['id'],
+            organization_id=row['organization_id'],
+            name=row['name'],
+            period_type=PeriodType(row['period_type']),
+            start_date=datetime.fromisoformat(row['start_date']),
+            end_date=datetime.fromisoformat(row['end_date']),
+            status=PeriodStatus(row['status']),
+            closed_at=datetime.fromisoformat(row['closed_at']) if row['closed_at'] else None,
+            closed_by=row['closed_by'],
+            locked_at=datetime.fromisoformat(row['locked_at']) if row['locked_at'] else None,
+            locked_by=row['locked_by'],
+            total_revenue=row['total_revenue'],
+            total_deals=row['total_deals'],
+            total_partners=row['total_partners'],
+            created_at=datetime.fromisoformat(row['created_at']),
+            created_by=row['created_by'],
+            notes=row['notes']
+        )
+
+    def close_period(self, period_id: int, closed_by: str, total_revenue: float, total_deals: int, total_partners: int) -> None:
+        """Close a period and record summary statistics."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            UPDATE attribution_period
+            SET status = 'closed',
+                closed_at = ?,
+                closed_by = ?,
+                total_revenue = ?,
+                total_deals = ?,
+                total_partners = ?
+            WHERE id = ?
+        """, (
+            datetime.now().isoformat(),
+            closed_by,
+            total_revenue,
+            total_deals,
+            total_partners,
+            period_id
+        ))
+        self.conn.commit()
+
+    def lock_period(self, period_id: int, locked_by: str) -> None:
+        """Lock a period to prevent any modifications."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            UPDATE attribution_period
+            SET status = 'locked',
+                locked_at = ?,
+                locked_by = ?
+            WHERE id = ?
+        """, (
+            datetime.now().isoformat(),
+            locked_by,
+            period_id
+        ))
+        self.conn.commit()
+
+    def reopen_period(self, period_id: int) -> None:
+        """Reopen a closed period."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            UPDATE attribution_period
+            SET status = 'open',
+                closed_at = NULL,
+                closed_by = NULL,
+                locked_at = NULL,
+                locked_by = NULL
+            WHERE id = ?
+        """, (period_id,))
+        self.conn.commit()
+
+    def update_period(self, period: 'AttributionPeriod') -> None:
+        """Update a period."""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            UPDATE attribution_period
+            SET name = ?, period_type = ?, start_date = ?, end_date = ?,
+                status = ?, notes = ?
+            WHERE id = ?
+        """, (
+            period.name,
+            period.period_type.value,
+            period.start_date.isoformat(),
+            period.end_date.isoformat(),
+            period.status.value,
+            period.notes,
+            period.id
+        ))
+        self.conn.commit()
+
+    def delete_period(self, period_id: int) -> None:
+        """Delete a period."""
+        cursor = self.conn.cursor()
+        cursor.execute("DELETE FROM attribution_period WHERE id = ?", (period_id,))
+        self.conn.commit()

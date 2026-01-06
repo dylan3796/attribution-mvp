@@ -89,6 +89,9 @@ from approval_workflow import (
     render_approval_stats
 )
 
+# Period management
+from period_management import render_period_management
+
 # ============================================================================
 # Authentication Check
 # ============================================================================
@@ -526,7 +529,8 @@ tabs = st.tabs([
     "🔄 Measurement Workflows",    # Tab 9: Advanced attribution methods
 
     # 🔍 ADVANCED (Audit & Deep Dive)
-    "🔍 Ledger Explorer"           # Tab 10: Immutable audit trail
+    "📅 Period Management",        # Tab 10: Close/lock attribution periods
+    "🔍 Ledger Explorer"           # Tab 11: Immutable audit trail
 ])
 
 
@@ -3074,10 +3078,25 @@ with tabs[3]:
 
 
 # ============================================================================
-# TAB 10: LEDGER EXPLORER
+# TAB 10: PERIOD MANAGEMENT
 # ============================================================================
 
 with tabs[10]:
+    # Check if user has permission to manage periods
+    if st.session_state.current_user.role.value not in ["admin", "manager"]:
+        st.error("🔒 Access Denied")
+        st.warning("You need Admin or Manager role to access period management.")
+        st.info(f"Your current role: {st.session_state.current_user.role.value}")
+        st.stop()
+
+    render_period_management(st.session_state.session_manager, st.session_state.current_user)
+
+
+# ============================================================================
+# TAB 11: LEDGER EXPLORER
+# ============================================================================
+
+with tabs[11]:
     st.title("🔍 Attribution Ledger Explorer")
     st.caption("Immutable audit trail of all attribution calculations")
 
