@@ -3,6 +3,10 @@ pandas
 openai
 python-dotenv
 
+# Database
+psycopg2-binary
+sqlalchemy
+
 # Visualization & Charts
 plotly
 altair

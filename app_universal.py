@@ -70,7 +70,7 @@ from utils_partner import (
 )
 
 # Database persistence
-from db import Database
+from db_universal import Database
 from session_manager import SessionManager
 
 # Authentication

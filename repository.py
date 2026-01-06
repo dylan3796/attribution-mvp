@@ -24,19 +24,64 @@ from models_new import (
     TargetType,
     TouchpointType
 )
+from db_connection import get_connection, is_postgres
 
 
 class AttributionRepository:
-    """Repository for managing attribution data in SQLite."""
+    """Repository for managing attribution data in both SQLite and PostgreSQL."""
 
     def __init__(self, db_path: str):
         self.db_path = db_path
-        self.conn = sqlite3.connect(db_path, check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
+        self.is_postgres = is_postgres()
+
+        # Get appropriate connection
+        self.conn = get_connection()
+
+        # Set row factory for SQLite (PostgreSQL uses RealDictCursor by default)
+        if not self.is_postgres:
+            self.conn.row_factory = sqlite3.Row
 
     def close(self):
         """Close database connection."""
         self.conn.close()
+
+    def _execute(self, sql: str, params: tuple = ()):
+        """Execute SQL with automatic placeholder conversion for PostgreSQL."""
+        cursor = self.conn.cursor()
+
+        # Convert ? to %s for PostgreSQL
+        if self.is_postgres and '?' in sql:
+            sql = sql.replace('?', '%s')
+
+        cursor.execute(sql, params)
+        return cursor
+
+    def _get_last_id(self, cursor, sql: str, params: tuple):
+        """
+        Execute INSERT and get last inserted ID.
+        For PostgreSQL, use RETURNING. For SQLite, use lastrowid.
+        """
+        if self.is_postgres:
+            # Add RETURNING clause for PostgreSQL
+            if 'RETURNING' not in sql.upper():
+                sql = sql.rstrip(';') + ' RETURNING id'
+            cursor = self._execute(sql, params)
+            result = cursor.fetchone()
+            self.conn.commit()
+            return result['id'] if isinstance(result, dict) else result[0]
+        else:
+            # SQLite uses lastrowid
+            cursor = self._execute(sql, params)
+            self.conn.commit()
+            return cursor.lastrowid
+
+    def _row_to_dict(self, row) -> Dict:
+        """Convert row to dictionary (works for both SQLite Row and PostgreSQL dict)."""
+        if row is None:
+            return None
+        if isinstance(row, dict):
+            return row
+        return dict(row)
 
     # ========================================================================
     # Attribution Targets
@@ -44,11 +89,11 @@ class AttributionRepository:
 
     def create_target(self, target: AttributionTarget) -> int:
         """Create a new attribution target and return its ID."""
-        cursor = self.conn.cursor()
-        cursor.execute("""
+        sql = """
             INSERT INTO attribution_target (type, external_id, value, timestamp, metadata, name, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (
+        """
+        params = (
             target.type.value,
             target.external_id,
             target.value,
@@ -56,9 +101,19 @@ class AttributionRepository:
             json.dumps(target.metadata),
             target.name,
             target.created_at.isoformat()
-        ))
-        self.conn.commit()
-        return cursor.lastrowid
+        )
+        cursor = self._execute(sql, params)
+
+        if self.is_postgres:
+            # PostgreSQL needs RETURNING clause
+            sql = sql.rstrip() + " RETURNING id"
+            cursor = self._execute(sql, params)
+            self.conn.commit()
+            result = cursor.fetchone()
+            return result['id'] if isinstance(result, dict) else result[0]
+        else:
+            self.conn.commit()
+            return cursor.lastrowid
 
     def get_target(self, target_id: int) -> Optional[AttributionTarget]:
         """Get a target by ID."""
