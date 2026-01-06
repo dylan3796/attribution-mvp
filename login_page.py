@@ -105,12 +105,40 @@ def render_login_page(db_path: str):
         st.caption("")
         st.caption("⚠️ Change default password in production")
 
+        # Quick access button
+        st.markdown("---")
+        st.markdown("### 🚀 Quick Access")
+        if st.button("Skip Login (Demo Mode)", type="secondary", use_container_width=True):
+            # Create mock admin user for demo mode
+            from auth import User, UserRole
+            from datetime import datetime
+
+            mock_user = User(
+                id=1,
+                email="demo@attribution.local",
+                name="Demo User",
+                role=UserRole.ADMIN,
+                organization_id="ORG001",
+                created_at=datetime.now()
+            )
+
+            st.session_state.authenticated = True
+            st.session_state.session_id = "demo_session"
+            st.session_state.current_user = mock_user
+
+            st.success("✅ Logged in as Demo User (Admin)")
+            st.rerun()
+
 
 def check_authentication(db_path: str) -> bool:
     """
     Check if user is authenticated.
     Returns True if authenticated, False otherwise.
     """
+    # Check if demo mode is active
+    if st.session_state.get("session_id") == "demo_session":
+        return st.session_state.get("authenticated", False)
+
     # Initialize auth manager if needed
     if "auth_manager" not in st.session_state:
         st.session_state.auth_manager = AuthManager(db_path)
