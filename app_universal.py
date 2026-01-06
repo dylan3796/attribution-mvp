@@ -234,6 +234,10 @@ if "db_initialized" not in st.session_state:
     db.init_db()
     st.session_state.db_initialized = True
 
+    # Create default organization and admin user if they don't exist
+    from auth import create_default_organization_and_admin
+    create_default_organization_and_admin(DB_PATH)
+
 # Initialize session manager
 if "session_manager" not in st.session_state:
     st.session_state.session_manager = SessionManager(DB_PATH)
