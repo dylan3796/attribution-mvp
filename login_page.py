@@ -119,6 +119,8 @@ def render_login_page(db_path: str):
                 name="Demo User",
                 role=UserRole.ADMIN,
                 organization_id="ORG001",
+                password_hash="demo_mode_no_password",
+                salt="demo_mode_no_salt",
                 created_at=datetime.now()
             )
 
