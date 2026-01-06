@@ -73,6 +73,25 @@ from utils_partner import (
 from db import Database
 from session_manager import SessionManager
 
+# Authentication
+from login_page import (
+    check_authentication,
+    render_login_page,
+    render_user_info_sidebar,
+    get_current_organization_id
+)
+
+# ============================================================================
+# Authentication Check
+# ============================================================================
+
+DB_PATH = "attribution.db"
+
+# Check if user is authenticated
+if not check_authentication(DB_PATH):
+    render_login_page(DB_PATH)
+    st.stop()
+
 # ============================================================================
 # Page Configuration
 # ============================================================================
@@ -198,9 +217,7 @@ section.main > div {
 # Database & Session Management
 # ============================================================================
 
-# Initialize database
-DB_PATH = "attribution.db"
-
+# Initialize database (DB_PATH defined in authentication section above)
 if "db_initialized" not in st.session_state:
     db = Database(DB_PATH)
     db.init_db()
@@ -384,6 +401,9 @@ st.caption("Config-driven partner attribution with CSV upload, templates, and na
 
 # Sidebar stats and filters
 with st.sidebar:
+    # Show user info
+    render_user_info_sidebar()
+
     st.markdown("### 🔍 Global Filters")
     st.caption("Apply filters to all dashboards")
 
