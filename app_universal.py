@@ -69,6 +69,10 @@ from utils_partner import (
     get_grade_description, format_percentage
 )
 
+# Database persistence
+from db import Database
+from session_manager import SessionManager
+
 # ============================================================================
 # Page Configuration
 # ============================================================================
@@ -191,25 +195,25 @@ section.main > div {
 
 
 # ============================================================================
-# In-Memory Data Store (SQLite integration would go here)
+# Database & Session Management
 # ============================================================================
 
-# Initialize session state for data storage
-if "targets" not in st.session_state:
-    st.session_state.targets = []  # List[AttributionTarget]
+# Initialize database
+DB_PATH = "attribution.db"
 
-if "touchpoints" not in st.session_state:
-    st.session_state.touchpoints = []  # List[PartnerTouchpoint]
+if "db_initialized" not in st.session_state:
+    db = Database(DB_PATH)
+    db.init_db()
+    st.session_state.db_initialized = True
 
-if "rules" not in st.session_state:
-    st.session_state.rules = []  # List[AttributionRule]
+# Initialize session manager
+if "session_manager" not in st.session_state:
+    st.session_state.session_manager = SessionManager(DB_PATH)
+    st.session_state.session_manager.initialize_session_state()
 
-if "ledger" not in st.session_state:
-    st.session_state.ledger = []  # List[LedgerEntry]
-
-if "partners" not in st.session_state:
-    # Preserve existing partner data for dashboard compatibility
-    st.session_state.partners = {
+# Ensure we have some demo partners for backwards compatibility
+if not st.session_state.partners:
+    demo_partners = {
         "P001": "CloudConsult Partners",
         "P002": "DataWorks SI",
         "P003": "AnalyticsPro",
@@ -219,17 +223,19 @@ if "partners" not in st.session_state:
         "P007": "GlobalTech Solutions",
         "P008": "EnterprisePartners"
     }
+    for pid, pname in demo_partners.items():
+        st.session_state.session_manager.add_partner(pid, pname)
 
-# Global filters state
+# Global filters state (UI only, not persisted)
 if "global_filters" not in st.session_state:
     st.session_state.global_filters = {
-        "date_range": (datetime.now() - timedelta(days=90), datetime.now()),
+        "date_range": (date.today() - timedelta(days=90), date.today()),
         "selected_partners": [],
         "deal_stage": "All",
         "min_deal_size": 0
     }
 
-# Metric visibility toggles
+# Metric visibility toggles (UI only, not persisted)
 if "visible_metrics" not in st.session_state:
     st.session_state.visible_metrics = {
         "revenue": True,
@@ -248,37 +254,15 @@ if "visible_metrics" not in st.session_state:
 def calculate_attribution_for_all_targets():
     """
     Run attribution calculations for all targets using all active rules.
-    Populates the ledger.
+    Populates the ledger and persists to database.
     """
     engine = AttributionEngine()
+    session_mgr = st.session_state.session_manager
 
-    new_ledger_entries = []
+    # Use session manager's recalculation which persists to database
+    entries_created = session_mgr.recalculate_attribution(engine)
 
-    for target in st.session_state.targets:
-        # Get touchpoints for this target
-        target_touchpoints = [
-            tp for tp in st.session_state.touchpoints
-            if tp.target_id == target.id
-        ]
-
-        if not target_touchpoints:
-            continue
-
-        # Select best rule for this target
-        rule = select_rule_for_target(target, st.session_state.rules)
-
-        if not rule:
-            continue
-
-        # Calculate attribution
-        entries = engine.calculate(target, target_touchpoints, rule)
-
-        new_ledger_entries.extend(entries)
-
-    # Append to ledger (immutable - never delete old entries)
-    st.session_state.ledger.extend(new_ledger_entries)
-
-    return len(new_ledger_entries)
+    return entries_created
 
 
 def get_ledger_as_dataframe() -> pd.DataFrame:
@@ -410,7 +394,7 @@ with st.sidebar:
         key="date_range_input",
         help="Filter data by date range"
     )
-    if len(date_range) == 2:
+    if date_range and len(date_range) == 2:
         st.session_state.global_filters["date_range"] = date_range
 
     # Partner filter

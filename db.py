@@ -215,6 +215,7 @@ class Database:
             value REAL NOT NULL,
             timestamp TEXT NOT NULL,
             metadata TEXT,
+            name TEXT,
             created_at TEXT NOT NULL
         );
         """)
@@ -268,10 +269,12 @@ class Database:
             partner_id TEXT NOT NULL,
             attributed_value REAL NOT NULL,
             split_percentage REAL NOT NULL,
+            attribution_percentage REAL NOT NULL DEFAULT 0,
             rule_id INTEGER NOT NULL,
             calculation_timestamp TEXT NOT NULL,
             override_by TEXT,
             audit_trail TEXT,
+            metadata TEXT,
             FOREIGN KEY (target_id) REFERENCES attribution_target(id),
             FOREIGN KEY (rule_id) REFERENCES attribution_rule(id)
         );
@@ -371,6 +374,13 @@ class Database:
         except Exception as e:
             # Table might not exist yet (fresh install)
             logger.debug(f"Skipping partner_touchpoint backfill: {e}")
+
+        # Add missing columns to attribution_target
+        ensure_column("attribution_target", "name", "name TEXT")
+
+        # Add missing columns to ledger_entry
+        ensure_column("ledger_entry", "attribution_percentage", "attribution_percentage REAL NOT NULL DEFAULT 0")
+        ensure_column("ledger_entry", "metadata", "metadata TEXT")
 
     def _migrate_legacy_rules(self) -> None:
         """Migrate old rule_engine_rules key to account_rules."""
