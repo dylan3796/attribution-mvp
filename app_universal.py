@@ -78,7 +78,15 @@ from login_page import (
     check_authentication,
     render_login_page,
     render_user_info_sidebar,
-    get_current_organization_id
+    get_current_organization_id,
+    can_user_approve_touchpoints
+)
+
+# Approval workflow
+from approval_workflow import (
+    render_approval_queue,
+    render_approval_history,
+    render_approval_stats
 )
 
 # ============================================================================
@@ -508,16 +516,17 @@ tabs = st.tabs([
     "💼 Partner Sales",            # Tab 1: Partner performance & revenue
     "🤝 Partner Management",       # Tab 2: Partner health & alerts
     "💰 Deal Drilldown",           # Tab 3: Dispute resolution
+    "📋 Approval Queue",           # Tab 4: Partner touchpoint approvals
 
     # ⚙️ SETUP & CONFIGURATION (Admin - Ordered by ease of use)
-    "📥 Data Import",              # Tab 4: Upload data (first step)
-    "🔗 Salesforce Integration",   # Tab 5: Connect Salesforce & segment modes
-    "🎨 Rule Builder",             # Tab 6: Visual rule creator (easy, no-code)
-    "📋 Rules & Templates",        # Tab 7: Manage existing rules
-    "🔄 Measurement Workflows",    # Tab 8: Advanced attribution methods
+    "📥 Data Import",              # Tab 5: Upload data (first step)
+    "🔗 Salesforce Integration",   # Tab 6: Connect Salesforce & segment modes
+    "🎨 Rule Builder",             # Tab 7: Visual rule creator (easy, no-code)
+    "📋 Rules & Templates",        # Tab 8: Manage existing rules
+    "🔄 Measurement Workflows",    # Tab 9: Advanced attribution methods
 
     # 🔍 ADVANCED (Audit & Deep Dive)
-    "🔍 Ledger Explorer"           # Tab 9: Immutable audit trail
+    "🔍 Ledger Explorer"           # Tab 10: Immutable audit trail
 ])
 
 
@@ -1535,10 +1544,35 @@ with tabs[2]:
 
 
 # ============================================================================
-# TAB 4: DATA IMPORT
+# TAB 4: APPROVAL QUEUE
 # ============================================================================
 
 with tabs[4]:
+    # Check if user has permission to approve touchpoints
+    if not can_user_approve_touchpoints():
+        st.error("🔒 Access Denied")
+        st.warning("You need Partner Ops, Manager, or Admin role to access the approval queue.")
+        st.info(f"Your current role: {st.session_state.current_user.role.value}")
+        st.stop()
+
+    # Sub-tabs for approval workflow
+    approval_tabs = st.tabs(["📋 Pending Approvals", "📜 Approval History", "📊 Statistics"])
+
+    with approval_tabs[0]:
+        render_approval_queue(st.session_state.session_manager, st.session_state.current_user)
+
+    with approval_tabs[1]:
+        render_approval_history(st.session_state.session_manager)
+
+    with approval_tabs[2]:
+        render_approval_stats(st.session_state.session_manager)
+
+
+# ============================================================================
+# TAB 5: DATA IMPORT
+# ============================================================================
+
+with tabs[5]:
     st.title("📥 Data Import")
     st.caption("Upload CSV data with automatic schema detection")
 
@@ -1760,10 +1794,10 @@ Perfect for exploring features and presenting to stakeholders.
 
 
 # ============================================================================
-# TAB 5: SALESFORCE INTEGRATION
+# TAB 6: SALESFORCE INTEGRATION
 # ============================================================================
 
-with tabs[5]:
+with tabs[6]:
     st.title("🔗 Salesforce Integration")
     st.caption("Connect your Salesforce org and configure data sync")
 
@@ -2094,10 +2128,10 @@ with tabs[5]:
 
 
 # ============================================================================
-# TAB 6: VISUAL RULE BUILDER (SIMPLIFIED UX)
+# TAB 7: VISUAL RULE BUILDER (SIMPLIFIED UX)
 # ============================================================================
 
-with tabs[6]:
+with tabs[7]:
     st.title("🎨 Build Your Attribution Rule")
     st.caption("No coding required - just drag sliders and see results instantly")
 
@@ -2378,10 +2412,10 @@ with tabs[6]:
             else:
                 st.warning("Please enter a description first")
 # ============================================================================
-# TAB 7: RULES & TEMPLATES
+# TAB 8: RULES & TEMPLATES
 # ============================================================================
 
-with tabs[7]:
+with tabs[8]:
     st.title("📋 Active Rules & Templates")
 
     if st.session_state.rules:
@@ -2408,10 +2442,10 @@ with tabs[7]:
 
 
 # ============================================================================
-# TAB 8: MEASUREMENT WORKFLOWS
+# TAB 9: MEASUREMENT WORKFLOWS
 # ============================================================================
 
-with tabs[8]:
+with tabs[9]:
     st.title("🔄 Measurement Workflows")
     st.caption("Configure how your company measures partner contribution")
 
@@ -3040,10 +3074,10 @@ with tabs[3]:
 
 
 # ============================================================================
-# TAB 9: LEDGER EXPLORER
+# TAB 10: LEDGER EXPLORER
 # ============================================================================
 
-with tabs[9]:
+with tabs[10]:
     st.title("🔍 Attribution Ledger Explorer")
     st.caption("Immutable audit trail of all attribution calculations")
 
