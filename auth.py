@@ -428,26 +428,54 @@ class AuthManager:
 
 def create_default_organization_and_admin(db_path: str):
     """Create default organization and admin user for initial setup."""
+    import streamlit as st
+
     auth = AuthManager(db_path)
 
     # Create default organization
     org_id = "ORG001"
+    org_name = "Default Organization"
+
+    # Check if Streamlit secrets has custom org name
     try:
-        auth.create_organization(org_id, "Default Organization")
+        if hasattr(st, 'secrets') and 'organization' in st.secrets:
+            org_name = st.secrets['organization'].get('name', org_name)
+    except Exception:
+        pass
+
+    try:
+        auth.create_organization(org_id, org_name)
     except sqlite3.IntegrityError:
         # Organization already exists
         pass
 
+    # Get admin credentials from Streamlit secrets or use defaults
+    admin_email = "admin@attribution.local"
+    admin_password = "admin123"
+    admin_name = "System Administrator"
+
+    try:
+        if hasattr(st, 'secrets') and 'admin' in st.secrets:
+            admin_email = st.secrets['admin'].get('email', admin_email)
+            admin_password = st.secrets['admin'].get('password', admin_password)
+            admin_name = st.secrets['admin'].get('name', admin_name)
+            print(f"✅ Using admin credentials from Streamlit secrets: {admin_email}")
+    except Exception as e:
+        print(f"ℹ️ No secrets found, using default credentials: {e}")
+
     # Create admin user
     try:
         auth.create_user(
-            email="admin@attribution.local",
-            name="System Administrator",
-            password="admin123",  # Change this in production!
+            email=admin_email,
+            name=admin_name,
+            password=admin_password,
             role=UserRole.ADMIN,
             organization_id=org_id
         )
-        print("✅ Default admin created: admin@attribution.local / admin123")
+        if admin_email == "admin@attribution.local":
+            print("✅ Default admin created: admin@attribution.local / admin123")
+        else:
+            print(f"✅ Admin created from secrets: {admin_email}")
     except sqlite3.IntegrityError:
         # User already exists
         pass
