@@ -92,48 +92,51 @@ The app will open in your browser at `http://localhost:8501`
 
 ## Usage
 
-### Six Main Tabs
+### Running the App
 
-1. **Dashboard**
-   - Executive overview with key metrics
-   - Interactive charts (revenue trends, partner performance, attribution distribution)
-   - Pipeline funnel visualization
-   - Export capabilities (CSV, Excel, PDF)
-   - Customizable time periods
+There are two application entry points:
 
-2. **Admin**
-   - Configure split cap enforcement
-   - Set Implementation (SI) auto-split rules
-   - Manage business rules
-   - Bulk import/export operations
-   - CSV template downloads
-   - Reset demo data
-   - Recompute attribution ledger
-   - LLM prompt configuration
+```bash
+# Full-featured universal app (recommended)
+streamlit run app_universal.py
 
-3. **Account Partner 360**
-   - Link partners to use cases
-   - View and manage partner splits
-   - Apply rules automatically
-   - Advanced filtering (account, stage, partner)
-   - Partner leaderboard with export
+# Simplified demo app
+streamlit run app.py
+```
 
-4. **Account Drilldown**
-   - View attributed revenue by partner
-   - See detailed explanations for attribution decisions
-   - Review revenue events
-   - Export account reports (Excel, PDF)
+### Universal App Tabs (12 Tabs)
 
-5. **Relationship Summary (AI)**
-   - Generate AI-powered relationship summaries
-   - View activity history
-   - Get partner recommendations
+**Operational Views (Daily Use):**
 
-6. **Audit Trail**
-   - Complete change history
-   - Filter by date, event type, account
-   - Export audit logs (CSV, Excel, PDF)
-   - Metrics dashboard
+1. **📊 Executive Dashboard** - C-suite overview with metrics and charts
+2. **💼 Partner Sales** - Partner performance and revenue tracking
+3. **🤝 Partner Management** - Partner health monitoring and alerts
+4. **💰 Deal Drilldown** - Detailed deal view and dispute resolution
+5. **📋 Approval Queue** - Partner touchpoint approval workflow
+
+**Setup & Configuration:**
+
+6. **📥 Data Import** - Upload CSV data and templates
+7. **🔗 Salesforce Integration** - Connect Salesforce and configure segment modes
+8. **🎨 Rule Builder** - Visual no-code rule creator
+9. **📋 Rules & Templates** - Manage existing business rules
+10. **🔄 Measurement Workflows** - Advanced attribution methods
+
+**Advanced (Audit & Deep Dive):**
+
+11. **📅 Period Management** - Close and lock attribution periods
+12. **🔍 Ledger Explorer** - Immutable audit trail and ledger entries
+
+### Simplified App Tabs (6 Tabs)
+
+The `app.py` entry point provides a streamlined experience:
+
+1. **Dashboard** - Executive overview with key metrics
+2. **Admin** - Settings, bulk operations, rule management
+3. **Account Partner 360** - Link partners to use cases
+4. **Account Drilldown** - Detailed account attribution view
+5. **Relationship Summary (AI)** - AI-powered insights
+6. **Audit Trail** - Complete change history
 
 ### Key Workflows
 

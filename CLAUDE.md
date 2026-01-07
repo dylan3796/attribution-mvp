@@ -21,7 +21,10 @@ Attribution MVP is a **multi-segment partner attribution tracking system** built
 # Activate virtual environment
 source .venv/bin/activate
 
-# Start the app
+# Full-featured universal app (12 tabs) - recommended
+streamlit run app_universal.py
+
+# Simplified demo app (6 tabs)
 streamlit run app.py
 
 # App runs at http://localhost:8501
@@ -44,7 +47,8 @@ pytest tests/test_rules.py       # Specific file
 
 | Module | Purpose |
 |--------|---------|
-| `app.py` | Main Streamlit entry point (~2000 lines), UI tabs, initialization |
+| `app_universal.py` | Full-featured app with 12 tabs (recommended entry point) |
+| `app.py` | Simplified demo app with 6 tabs |
 | `db.py` | Database operations, schema creation, migrations |
 | `rules.py` | Rule engine for business logic evaluation |
 | `attribution.py` | Core attribution calculation logic |
