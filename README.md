@@ -37,7 +37,8 @@ A partner attribution tracking system that manages relationships between account
 ## Tech Stack
 
 - **Streamlit** - Web UI framework
-- **SQLite** - Local database
+- **SQLite** - Local database (development)
+- **PostgreSQL** - Production database (optional)
 - **Pandas** - Data manipulation
 - **Plotly** - Interactive charts and visualizations
 - **ReportLab** - PDF generation
@@ -162,19 +163,29 @@ The app will open in your browser at `http://localhost:8501`
 
 ## Database Schema
 
-The application uses SQLite with the following main tables:
+The application uses SQLite (dev) or PostgreSQL (prod) with the following tables:
 
+**Core Entities:**
 - `accounts` - Customer accounts
 - `partners` - Partner organizations
-- `use_cases` - Deals/opportunities
-- `use_case_partners` - Partner-to-use-case links
+- `use_cases` - Deals/opportunities with stages and values
+- `use_case_partners` - Partner-to-use-case links with roles
 - `account_partners` - Account-level split percentages
+
+**Attribution Tracking:**
 - `revenue_events` - Daily revenue data
 - `attribution_events` - Attribution ledger (who gets credit)
 - `attribution_explanations` - Detailed explanations for splits
+
+**System:**
 - `activities` - Activity log
 - `audit_trail` - Complete history of changes
 - `settings` - Application configuration
+
+**Authentication:**
+- `users` - User accounts with roles
+- `sessions` - Active user sessions
+- `organizations` - Multi-tenant organization support
 
 ## Development
 
@@ -182,20 +193,88 @@ The application uses SQLite with the following main tables:
 
 ```
 attribution-mvp/
-├── app.py                 # Main Streamlit application
-├── db.py                  # Database operations and schema
-├── rules.py               # Rule engine logic
-├── attribution.py         # Attribution calculation logic
-├── models.py              # Data models and types
-├── ui.py                  # Streamlit UI components
-├── llm.py                 # OpenAI integration
-├── requirements.txt       # Python dependencies
-├── tests/                 # Test suite
-│   ├── test_db.py
-│   ├── test_rules.py
-│   ├── test_attribution.py
-│   └── test_helpers.py
-└── AGENTS.md             # Development guidelines
+├── Core Application
+│   ├── app.py                    # Main Streamlit application (entry point)
+│   ├── config.py                 # Environment configuration
+│   ├── models.py                 # Data models and types
+│   └── models_new.py             # Extended universal attribution models
+│
+├── Database Layer
+│   ├── db.py                     # Database operations and schema
+│   ├── db_connection.py          # Connection management
+│   ├── db_universal.py           # Universal database schema
+│   └── repository.py             # Repository pattern for persistence
+│
+├── Business Logic
+│   ├── rules.py                  # Rule engine logic
+│   ├── attribution.py            # Attribution calculation logic
+│   ├── attribution_engine.py     # Enhanced attribution computation
+│   ├── inference_engine.py       # Touchpoint to opportunity mapping
+│   └── nl_rule_parser.py         # Natural language rule parsing
+│
+├── AI Features
+│   ├── ai.py                     # AI-powered features
+│   └── llm.py                    # LLM integration wrapper
+│
+├── Authentication & Session
+│   ├── auth.py                   # Authentication and user management
+│   ├── session_manager.py        # Session state and DB persistence
+│   └── login_page.py             # Login page UI
+│
+├── UI Components
+│   ├── dashboards.py             # Visualization components
+│   ├── dashboards_partner.py     # Partner-specific dashboards
+│   ├── partner_portal.py         # Partner-facing portal UI
+│   ├── partner_analytics.py      # Partner analytics views
+│   └── approval_workflow.py      # Partner touchpoint approval UI
+│
+├── Operations
+│   ├── exports.py                # CSV/Excel/PDF export functionality
+│   ├── bulk_operations.py        # Bulk import/export operations
+│   ├── deal_registration.py      # Deal registration workflow
+│   ├── period_management.py      # Attribution period management
+│   ├── data_ingestion.py         # Data import/processing
+│   └── salesforce_connector.py   # Salesforce integration
+│
+├── Utilities
+│   ├── utils.py                  # General utility functions
+│   ├── utils_partner.py          # Partner-specific utilities
+│   ├── templates.py              # Email/notification templates
+│   ├── pdf_executive_report.py   # PDF report generation
+│   ├── demo_data.py              # Demo data generation
+│   ├── migrate_app.py            # Database migrations
+│   └── validate_workflows.py     # Workflow validation
+│
+├── Tests
+│   └── tests/
+│       ├── test_db.py            # Database tests
+│       ├── test_rules.py         # Rule engine tests
+│       ├── test_attribution.py   # Attribution tests
+│       ├── test_ai_and_utils.py  # AI and utility tests
+│       ├── test_helpers.py       # Helper function tests
+│       ├── test_workflows.py     # Workflow tests
+│       └── test_universal_architecture.py  # Universal schema tests
+│
+├── Configuration
+│   ├── requirements.txt          # Python dependencies
+│   ├── pytest.ini                # Pytest configuration
+│   ├── .env.example              # Environment template
+│   └── .gitignore                # Git ignore patterns
+│
+├── Documentation
+│   ├── README.md                 # Project documentation
+│   ├── CLAUDE.md                 # AI assistant guide
+│   ├── AGENTS.md                 # Development guidelines
+│   ├── QUICKSTART.md             # Quick start guide
+│   ├── POSTGRESQL_SETUP.md       # PostgreSQL configuration
+│   └── CHANGELOG.md              # Version history
+│
+└── Claude Agents
+    └── .claude/agents/           # Specialized Claude agents
+        ├── design/               # Dashboard and UI design
+        ├── engineering/          # Backend architecture
+        ├── testing/              # Testing and validation
+        └── product/              # Product strategy
 ```
 
 ### Running Tests
@@ -287,7 +366,9 @@ streamlit run app.py --server.port 8502
 
 ## Contributing
 
-See `AGENTS.md` for detailed development guidelines and best practices.
+- See `AGENTS.md` for development guidelines and best practices
+- See `CLAUDE.md` for AI assistant context and conventions
+- See `QUICKSTART.md` for a 5-minute setup guide
 
 ## License
 
@@ -297,5 +378,6 @@ MIT License - see LICENSE file for details
 
 For issues or questions:
 1. Check existing issues
-2. Review AGENTS.md for development guidelines
-3. Create a new issue with details about your problem
+2. Review `AGENTS.md` for development guidelines
+3. Review `CLAUDE.md` for AI assistant context
+4. Create a new issue with details about your problem
