@@ -44,7 +44,7 @@ pytest tests/test_rules.py       # Specific file
 
 | Module | Purpose |
 |--------|---------|
-| `app.py` | Main Streamlit entry point (~2000 lines), UI tabs, initialization |
+| `app.py` | Main Streamlit entry point (~3100 lines), 12 UI tabs, initialization |
 | `db.py` | Database operations, schema creation, migrations |
 | `rules.py` | Rule engine for business logic evaluation |
 | `attribution.py` | Core attribution calculation logic |

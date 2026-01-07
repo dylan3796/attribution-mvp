@@ -105,48 +105,77 @@ Click **"Skip Login (Demo Mode)"** on the login page for instant access with sam
 
 ## Usage
 
-### Six Main Tabs
+### Main Tabs
 
-1. **Dashboard**
-   - Executive overview with key metrics
+The application is organized into 12 tabs grouped by workflow:
+
+#### Operational Views (Daily Use)
+
+1. **Executive Dashboard**
+   - C-suite overview with key metrics
    - Interactive charts (revenue trends, partner performance, attribution distribution)
    - Pipeline funnel visualization
    - Export capabilities (CSV, Excel, PDF)
-   - Customizable time periods
 
-2. **Admin**
-   - Configure split cap enforcement
-   - Set Implementation (SI) auto-split rules
-   - Manage business rules
-   - Bulk import/export operations
-   - CSV template downloads
-   - Reset demo data
-   - Recompute attribution ledger
-   - LLM prompt configuration
+2. **Partner Sales**
+   - Partner performance and revenue tracking
+   - Sales leaderboards and rankings
+   - Revenue attribution by partner
 
-3. **Account Partner 360**
-   - Link partners to use cases
-   - View and manage partner splits
-   - Apply rules automatically
-   - Advanced filtering (account, stage, partner)
-   - Partner leaderboard with export
+3. **Partner Management**
+   - Partner health monitoring and alerts
+   - Relationship status tracking
+   - Partner onboarding and lifecycle management
 
-4. **Account Drilldown**
-   - View attributed revenue by partner
-   - See detailed explanations for attribution decisions
-   - Review revenue events
-   - Export account reports (Excel, PDF)
+4. **Deal Drilldown**
+   - Detailed deal/opportunity analysis
+   - Dispute resolution tools
+   - Attribution explanations per deal
 
-5. **Relationship Summary (AI)**
-   - Generate AI-powered relationship summaries
-   - View activity history
-   - Get partner recommendations
+5. **Approval Queue**
+   - Partner touchpoint approvals
+   - Pending approval workflows
+   - Approval history and statistics
 
-6. **Audit Trail**
-   - Complete change history
-   - Filter by date, event type, account
-   - Export audit logs (CSV, Excel, PDF)
-   - Metrics dashboard
+#### Setup & Configuration (Admin)
+
+6. **Data Import**
+   - CSV upload for bulk data
+   - Downloadable templates
+   - Manual data entry options
+
+7. **Salesforce Integration**
+   - Connect and sync with Salesforce CRM
+   - Segment mode configuration
+   - Field mapping and sync settings
+
+8. **Rule Builder**
+   - Visual no-code rule creator
+   - Drag-and-drop rule configuration
+   - Rule testing and validation
+
+9. **Rules & Templates**
+   - Manage existing business rules
+   - Rule templates library
+   - Import/export rule configurations
+
+10. **Measurement Workflows**
+    - Advanced attribution methods
+    - Custom measurement configurations
+    - Workflow automation settings
+
+#### Advanced (Audit & Deep Dive)
+
+11. **Period Management**
+    - Close and lock attribution periods
+    - Period analytics and reporting
+    - Historical period management
+
+12. **Ledger Explorer**
+    - Immutable audit trail
+    - Complete change history
+    - Filter by date, event type, account
+    - Export audit logs (CSV, Excel, PDF)
 
 ### Key Workflows
 
