@@ -179,29 +179,41 @@ The application is organized into 12 tabs grouped by workflow:
 
 ### Key Workflows
 
-#### Adding a Partner to a Use Case
+#### Adding Partner Attribution
 
-1. Go to "Account Partner 360" tab
-2. Select an account
-3. Choose a use case
-4. Select a partner and their role
-5. Click "Link partner to use case"
-6. The system will automatically calculate splits based on your configured rules
+1. Go to **"Partner Sales"** or **"Deal Drilldown"** tab
+2. Select a deal/opportunity
+3. Add partner touchpoints with roles
+4. The system calculates attribution based on active rules
 
 #### Configuring Business Rules
 
-1. Go to "Admin" tab
-2. Scroll to "Rule Engine"
-3. Add account-level or use-case-level rules
-4. Rules can allow or deny based on:
-   - Partner role
-   - Deal stage
-   - Estimated value (min/max)
+1. Go to **"Rule Builder"** tab for visual rule creation, or
+2. Go to **"Rules & Templates"** tab to manage existing rules
+3. Choose an attribution model:
+   - Equal Split, First Touch, Last Touch
+   - Role-Weighted, Time Decay
+   - Custom configurations
+4. Set rule priority and conditions
+
+#### Importing Data
+
+1. Go to **"Data Import"** tab
+2. Download a CSV template for your data type
+3. Upload your populated CSV
+4. Review and confirm the import
+
+#### Managing Attribution Periods
+
+1. Go to **"Period Management"** tab
+2. Create or close attribution periods
+3. Lock periods to prevent changes
+4. View period analytics
 
 #### Exporting Data
 
-- Use the export buttons in each tab to download data as CSV, Excel, or PDF
-- Exports include all visible data with proper formatting
+- Use export buttons throughout the app for CSV, Excel, or PDF
+- **"Ledger Explorer"** tab provides complete audit trail exports
 
 ## Database
 
@@ -215,22 +227,20 @@ See [POSTGRESQL_SETUP.md](POSTGRESQL_SETUP.md) for production database configura
 ### Schema Overview
 
 **Core entities:**
-- `accounts` - Customer accounts
+- `attribution_target` - Deals/opportunities to attribute
+- `partner_touchpoint` - Partner interactions with deals
 - `partners` - Partner organizations
-- `use_cases` - Deals/opportunities
-- `use_case_partners` - Partner-to-use-case links
-- `account_partners` - Account-level split percentages
 
-**Attribution tracking:**
-- `revenue_events` - Daily revenue data
-- `attribution_events` - Attribution ledger (who gets credit)
-- `attribution_explanations` - Detailed explanations for splits
-- `audit_trail` - Complete history of changes
+**Attribution logic:**
+- `attribution_rule` - Business rules for attribution models
+- `ledger_entry` - Immutable attribution calculations
+- `measurement_workflow` - Attribution workflow configurations
+- `attribution_period` - Time periods for attribution cycles
 
 **System:**
-- `users`, `sessions`, `organizations` - Authentication
-- `settings` - Application configuration
-- `activities` - Activity log
+- `organizations` - Multi-tenant organization support
+- `users` - User accounts with roles
+- `sessions` - Login sessions
 
 ## Development
 
@@ -343,21 +353,28 @@ pytest tests/test_rules.py
 ### Database Reset
 
 To reset the database:
-1. Use the "Reset demo data" button in the Admin tab, or
-2. Delete `attribution.db` and restart the app
+1. Delete `attribution.db` and restart the app, or
+2. Go to **"Data Import"** tab and click **"Load Demo Data"** to populate fresh sample data
 
-The app will automatically create tables and seed demo data on first run.
+The app will automatically create tables on first run.
 
 ## Configuration Options
 
-### Settings (via Admin UI)
+### Attribution Models
 
-- **Enforce account split cap**: Prevent total splits from exceeding 100% per account
-- **SI auto-split mode**: Choose how Implementation partner splits are calculated
-  - `live_share`: Based on use case value vs account totals
-  - `fixed_percent`: Use a fixed percentage
-  - `manual_only`: Always set manually
-- **Default splits**: Configure default percentages for each partner role
+Configure via **"Rule Builder"** or **"Rules & Templates"** tabs:
+
+- **Equal Split**: Divide attribution evenly among all partners
+- **First Touch**: 100% credit to first partner interaction
+- **Last Touch**: 100% credit to most recent partner interaction
+- **Role-Weighted**: Assign percentages by partner role (e.g., SI 60%, Influence 40%)
+- **Time Decay**: Recent interactions weighted more heavily (configurable half-life)
+
+### Split Constraints
+
+- **Must Sum to 100%**: Total attribution normalized to 100%
+- **Cap at 100%**: Individual splits capped, no normalization
+- **Allow Double-Counting**: Partners can exceed 100% total (for influence tracking)
 
 ### Environment Variables
 
