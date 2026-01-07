@@ -1,6 +1,6 @@
 # Attribution MVP
 
-A partner attribution tracking system that manages relationships between accounts, partners, and use cases, automatically calculating revenue attribution splits based on configurable business rules.
+A multi-segment partner attribution tracking system built with Streamlit. It manages relationships between accounts, partners, and use cases (opportunities), automatically calculating revenue attribution splits based on configurable business rules.
 
 ## Features
 
@@ -9,12 +9,25 @@ A partner attribution tracking system that manages relationships between account
 - **Use Case Tracking**: Manage deals/opportunities with stages, estimated values, and target close dates
 - **Automated Attribution**: Calculate revenue splits based on partner involvement
 - **Rule Engine**: Configure business rules for partner assignment (based on role, stage, deal size)
+- **Natural Language Rules**: Convert plain English to business rules with AI
 - **Revenue Attribution Ledger**: Track and explain how revenue is attributed to partners
 - **AI-Powered Insights**: Generate relationship summaries and partner recommendations (optional OpenAI integration)
 - **Audit Trail**: Complete history of all split changes and decisions
 
+### Partner Ecosystem
+- **Partner Portal**: Self-service portal for partner access
+- **Deal Registration**: Partners can register deals for attribution
+- **Approval Workflows**: Configurable approval processes for deals and registrations
+- **Partner Analytics**: Detailed performance metrics and insights
+
+### Integrations
+- **Salesforce Connector**: Sync accounts, opportunities, and partner data
+- **Data Ingestion**: Flexible import from multiple sources
+- **Bulk Operations**: CSV import/export for accounts, partners, use cases, and relationships
+
 ### Dashboards & Visualizations
 - **Executive Dashboard**: Interactive overview with key metrics and charts
+- **Partner Dashboard**: Partner-specific performance views
 - **Revenue Trends**: Line charts showing revenue over time
 - **Partner Performance**: Bar charts and leaderboards
 - **Attribution Distribution**: Pie charts and waterfall visualizations
@@ -24,22 +37,17 @@ A partner attribution tracking system that manages relationships between account
 ### Export & Reporting
 - **CSV Export**: Export any data table to CSV format
 - **Excel Reports**: Multi-sheet workbooks with professional formatting
-- **PDF Reports**: Publication-ready reports with summaries and tables
+- **PDF Reports**: Publication-ready executive reports with summaries and tables
 - **Bulk Export**: Complete data backup in Excel format
 - **Report Types**: Partner Performance, Account Drilldown, Audit Trail
-
-### Bulk Operations
-- **Bulk Import**: CSV import for accounts, partners, use cases, and relationships
-- **Import Validation**: Error handling and progress feedback
-- **CSV Templates**: Downloadable templates for each data type
-- **Conflict Resolution**: Automatic upsert on duplicate records
 
 ## Tech Stack
 
 - **Streamlit** - Web UI framework
-- **SQLite** - Local database
+- **SQLite** - Development database
+- **PostgreSQL** - Production database
 - **Pandas** - Data manipulation
-- **Plotly** - Interactive charts and visualizations
+- **Plotly / Altair** - Interactive charts and visualizations
 - **ReportLab** - PDF generation
 - **OpenPyXL & XlsxWriter** - Excel export with formatting
 - **OpenAI API** - AI features (optional)
@@ -49,7 +57,7 @@ A partner attribution tracking system that manages relationships between account
 
 ### 1. Prerequisites
 
-- Python 3.8 or higher
+- Python 3.9 or higher
 - pip (Python package manager)
 
 ### 2. Installation
@@ -81,6 +89,8 @@ cp .env.example .env
 # The app works without it using deterministic fallbacks
 ```
 
+See [SECRETS_CONFIG.md](SECRETS_CONFIG.md) for detailed configuration options.
+
 ### 4. Run the Application
 
 ```bash
@@ -88,6 +98,10 @@ streamlit run app.py
 ```
 
 The app will open in your browser at `http://localhost:8501`
+
+### 5. Demo Mode
+
+Click **"Skip Login (Demo Mode)"** on the login page for instant access with sample data.
 
 ## Usage
 
@@ -157,24 +171,37 @@ The app will open in your browser at `http://localhost:8501`
 
 #### Exporting Data
 
-- Use the export buttons in each tab to download data as CSV
+- Use the export buttons in each tab to download data as CSV, Excel, or PDF
 - Exports include all visible data with proper formatting
 
-## Database Schema
+## Database
 
-The application uses SQLite with the following main tables:
+### Supported Databases
 
+- **SQLite** - Default for development (zero configuration)
+- **PostgreSQL** - Recommended for production deployments
+
+See [POSTGRESQL_SETUP.md](POSTGRESQL_SETUP.md) for production database configuration.
+
+### Schema Overview
+
+**Core entities:**
 - `accounts` - Customer accounts
 - `partners` - Partner organizations
 - `use_cases` - Deals/opportunities
 - `use_case_partners` - Partner-to-use-case links
 - `account_partners` - Account-level split percentages
+
+**Attribution tracking:**
 - `revenue_events` - Daily revenue data
 - `attribution_events` - Attribution ledger (who gets credit)
 - `attribution_explanations` - Detailed explanations for splits
-- `activities` - Activity log
 - `audit_trail` - Complete history of changes
+
+**System:**
+- `users`, `sessions`, `organizations` - Authentication
 - `settings` - Application configuration
+- `activities` - Activity log
 
 ## Development
 
@@ -182,20 +209,82 @@ The application uses SQLite with the following main tables:
 
 ```
 attribution-mvp/
-├── app.py                 # Main Streamlit application
-├── db.py                  # Database operations and schema
-├── rules.py               # Rule engine logic
-├── attribution.py         # Attribution calculation logic
-├── models.py              # Data models and types
-├── ui.py                  # Streamlit UI components
-├── llm.py                 # OpenAI integration
-├── requirements.txt       # Python dependencies
-├── tests/                 # Test suite
-│   ├── test_db.py
-│   ├── test_rules.py
-│   ├── test_attribution.py
-│   └── test_helpers.py
-└── AGENTS.md             # Development guidelines
+├── app.py                    # Main Streamlit application
+├── db.py                     # Database operations and schema
+├── db_connection.py          # Database connection management
+├── rules.py                  # Rule engine logic
+├── attribution.py            # Attribution calculation logic
+├── attribution_engine.py     # Enhanced attribution computation
+├── models.py                 # Data models and types
+├── models_new.py             # Extended data models
+│
+├── # Authentication & Session
+├── auth.py                   # Authentication and user management
+├── session_manager.py        # Session state and DB persistence
+├── login_page.py             # Login UI components
+│
+├── # UI & Dashboards
+├── dashboards.py             # Plotly visualization components
+├── dashboards_partner.py     # Partner-specific dashboards
+├── templates.py              # UI templates
+│
+├── # AI & Intelligence
+├── ai.py                     # OpenAI-powered features
+├── llm.py                    # LLM integration wrapper
+├── inference_engine.py       # ML inference capabilities
+├── nl_rule_parser.py         # Natural language rule parsing
+│
+├── # Data Operations
+├── exports.py                # CSV/Excel/PDF export functionality
+├── pdf_executive_report.py   # Executive PDF report generation
+├── bulk_operations.py        # Bulk import/export operations
+├── data_ingestion.py         # Data import from various sources
+├── demo_data.py              # Demo data generation
+│
+├── # Partner & Deal Management
+├── partner_portal.py         # Partner self-service portal
+├── partner_analytics.py      # Partner performance analytics
+├── deal_registration.py      # Deal registration workflows
+├── approval_workflow.py      # Approval process management
+├── period_management.py      # Time period handling
+│
+├── # Integrations
+├── salesforce_connector.py   # Salesforce CRM integration
+├── repository.py             # Data repository patterns
+│
+├── # Utilities
+├── config.py                 # Environment configuration
+├── utils.py                  # Helper functions
+├── utils_partner.py          # Partner-specific utilities
+├── validate_workflows.py     # Workflow validation
+│
+├── # Configuration
+├── requirements.txt          # Python dependencies
+├── pytest.ini                # Test configuration
+├── .env.example              # Environment template
+│
+├── # Tests
+├── tests/
+│   ├── test_db.py            # Database operations
+│   ├── test_rules.py         # Rule engine logic
+│   ├── test_attribution.py   # Attribution calculations
+│   ├── test_ai_and_utils.py  # AI features and utilities
+│   ├── test_helpers.py       # Helper functions
+│   ├── test_workflows.py     # End-to-end workflows
+│   └── test_universal_architecture.py  # Architecture tests
+│
+├── # Documentation
+├── README.md                 # This file
+├── CLAUDE.md                 # AI assistant guide
+├── AGENTS.md                 # Development guidelines
+├── QUICKSTART.md             # Quick start guide
+├── DEMO_GUIDE.md             # Demo walkthrough
+├── POSTGRESQL_SETUP.md       # Production database setup
+├── SECRETS_CONFIG.md         # Configuration reference
+├── QUICK_REFERENCE.md        # Command reference
+├── PLATFORM_OVERVIEW.md      # Architecture overview
+├── CHANGELOG.md              # Version history
+└── IMPROVEMENTS.md           # Planned improvements
 ```
 
 ### Running Tests
@@ -219,10 +308,10 @@ pytest tests/test_rules.py
 - Follow PEP 8
 - Use 4-space indentation
 - Add type hints to all functions
-- Keep functions small and focused
+- Keep functions small and focused (<50 lines preferred)
 - Document complex logic
 
-### Database Migrations
+### Database Reset
 
 To reset the database:
 1. Use the "Reset demo data" button in the Admin tab, or
@@ -243,10 +332,13 @@ The app will automatically create tables and seed demo data on first run.
 
 ### Environment Variables
 
-- `OPENAI_API_KEY`: OpenAI API key for AI features (optional)
-- `DB_PATH`: Database file path (default: attribution.db)
-- `LOG_LEVEL`: Logging level (default: INFO)
-- `LOG_FILE`: Log file path (default: attribution.log)
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `OPENAI_API_KEY` | OpenAI API key for AI features | (optional) |
+| `DB_PATH` | Database file path | `attribution.db` |
+| `DATABASE_URL` | PostgreSQL connection string | (optional) |
+| `LOG_LEVEL` | Logging level | `INFO` |
+| `LOG_FILE` | Log file path | `attribution.log` |
 
 ## AI Features
 
@@ -257,6 +349,20 @@ The app includes optional AI-powered features:
 - **Natural Language Rules**: Convert plain English to business rules
 
 These features work without an API key using deterministic fallbacks, but provide better results with OpenAI integration.
+
+## Documentation
+
+| Document | Purpose |
+|----------|---------|
+| [QUICKSTART.md](QUICKSTART.md) | Get up and running quickly |
+| [DEMO_GUIDE.md](DEMO_GUIDE.md) | Walkthrough of demo features |
+| [CLAUDE.md](CLAUDE.md) | Guide for AI assistants |
+| [AGENTS.md](AGENTS.md) | Development guidelines |
+| [POSTGRESQL_SETUP.md](POSTGRESQL_SETUP.md) | Production database setup |
+| [SECRETS_CONFIG.md](SECRETS_CONFIG.md) | Configuration reference |
+| [PLATFORM_OVERVIEW.md](PLATFORM_OVERVIEW.md) | Architecture deep-dive |
+| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | Command reference |
+| [CHANGELOG.md](CHANGELOG.md) | Version history |
 
 ## Troubleshooting
 
@@ -287,7 +393,9 @@ streamlit run app.py --server.port 8502
 
 ## Contributing
 
-See `AGENTS.md` for detailed development guidelines and best practices.
+See [AGENTS.md](AGENTS.md) for detailed development guidelines and best practices.
+
+For AI assistants working on this codebase, see [CLAUDE.md](CLAUDE.md).
 
 ## License
 
@@ -297,5 +405,5 @@ MIT License - see LICENSE file for details
 
 For issues or questions:
 1. Check existing issues
-2. Review AGENTS.md for development guidelines
+2. Review [AGENTS.md](AGENTS.md) for development guidelines
 3. Create a new issue with details about your problem
