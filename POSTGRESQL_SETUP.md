@@ -100,7 +100,7 @@ For local development, the app automatically uses SQLite. No changes needed!
 
 ```bash
 # Just run as normal
-streamlit run app_universal.py
+streamlit run app.py
 ```
 
 The app detects:
@@ -127,7 +127,7 @@ python3 -c "from db_universal import Database; db = Database(); db.init_db()"
 4. Start app:
 
 ```bash
-streamlit run app_universal.py
+streamlit run app.py
 ```
 
 ---

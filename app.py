@@ -1,1586 +1,3142 @@
-import json
-import pandas as pd
-import streamlit as st
-from datetime import date, datetime, timedelta
+"""
+Attribution MVP - Universal Architecture
+=========================================
 
-# Import our new modules
-from config import DB_PATH, LOG_LEVEL, LOG_FILE
-from db import Database
-from rules import RuleEngine
-from attribution import AttributionEngine
-from ai import AIFeatures
-from models import PARTNER_ROLES, SCHEMA_VERSION, DEFAULT_SETTINGS
-from utils import (
-    safe_json_loads,
-    dataframe_to_csv_download,
-    setup_logging,
-    render_apply_summary_dict
+Rebuilt with universal 4-table schema:
+- AttributionTarget (what gets credit)
+- PartnerTouchpoint (evidence of partner involvement)
+- AttributionRule (config-driven calculation logic)
+- AttributionLedger (immutable results with audit trails)
+
+Key Features:
+- CSV upload with auto schema detection
+- Template selection (1-click attribution models)
+- Natural language rule creation
+- Config-driven attribution (no hardcoded logic)
+- **PRESERVED DASHBOARD** (identical to original)
+"""
+
+import streamlit as st
+import pandas as pd
+import json
+import calendar
+from datetime import datetime, date, timedelta
+from typing import Dict, List, Any, Optional
+import warnings
+
+# Suppress deprecation warnings
+warnings.filterwarnings('ignore', message='.*Plotly configuration.*')
+warnings.filterwarnings('ignore', message='.*label.*got an empty value.*')
+
+# New universal architecture imports
+from models_new import (
+    AttributionTarget, PartnerTouchpoint, AttributionRule, LedgerEntry,
+    TargetType, TouchpointType, AttributionModel, SplitConstraint,
+    DEFAULT_PARTNER_ROLES, SCHEMA_VERSION
 )
+from attribution_engine import AttributionEngine, select_rule_for_target
+from data_ingestion import ingest_csv, generate_csv_template, SchemaDetector
+from nl_rule_parser import parse_nl_to_rule, get_example_prompts
+from templates import list_templates, get_template, recommend_template
+from demo_data import generate_complete_demo_data, get_demo_data_summary, DEMO_PARTNER_NAMES
+
+# Preserve original dashboard visualizations
 from dashboards import (
     create_revenue_over_time_chart,
     create_partner_performance_bar_chart,
     create_attribution_pie_chart,
-    create_pipeline_funnel_chart,
-    create_account_health_gauge,
-    create_attribution_waterfall,
-    create_partner_role_distribution
+    create_deal_value_distribution,
+    create_partner_role_distribution,
+    create_attribution_waterfall
 )
-from exports import (
-    export_to_csv,
-    export_to_excel,
-    generate_pdf_report,
-    create_partner_performance_report,
-    create_account_drilldown_report
+from exports import export_to_csv, export_to_excel, generate_pdf_report, generate_partner_statement_pdf, generate_bulk_partner_statements
+from pdf_executive_report import generate_executive_report
+
+# Partner management dashboards
+from partner_analytics import (
+    calculate_health_score, calculate_period_comparison, detect_alerts,
+    calculate_win_rate, calculate_deal_velocity, generate_partner_insights,
+    get_top_movers
 )
-from bulk_operations import (
-    import_accounts_from_csv,
-    import_partners_from_csv,
-    import_use_cases_from_csv,
-    import_use_case_partners_from_csv,
-    export_all_data,
-    get_import_template
+from dashboards_partner import (
+    create_health_gauge, create_health_score_breakdown,
+    create_period_comparison_chart, create_top_movers_chart,
+    create_partner_revenue_trend, create_partner_activity_trend
+)
+from utils_partner import (
+    format_days_ago, format_growth_percentage, format_currency_compact,
+    get_trend_indicator, classify_health_grade, get_health_emoji,
+    get_grade_description, format_percentage
 )
 
-# Setup logging
-setup_logging(LOG_LEVEL, LOG_FILE)
+# Database persistence
+from db_universal import Database
+from session_manager import SessionManager
 
-# Initialize database and engines
-db = Database(DB_PATH)
-rule_engine = RuleEngine(db)
-attribution_engine = AttributionEngine(db, rule_engine)
-ai_features = AIFeatures(db)
-
-
-st.set_page_config(page_title="Attribution MVP", layout="wide")
-
-# Light theming to avoid plain white background
-st.markdown(
-    """
-    <style>
-    body {
-        background: linear-gradient(135deg, #f5f7fa 0%, #e8f0ff 50%, #fdfbfb 100%);
-    }
-    section.main > div {
-        padding: 1.5rem 1.5rem 3rem 1.5rem;
-    }
-    .block-container {
-        padding-top: 1.5rem;
-    }
-    .stTabs [role="tablist"] {
-        gap: 0.25rem;
-    }
-    .stTabs [role="tab"] {
-        border-radius: 12px;
-        background: #f2f4f8;
-        padding: 0.35rem 0.75rem;
-        border: 1px solid #e0e6ef;
-    }
-    .stTabs [aria-selected="true"] {
-        background: #d7e3ff;
-        border-color: #b6ccff;
-        color: #0b3ba7 !important;
-        font-weight: 600;
-    }
-    .metric-card {
-        background: rgba(255,255,255,0.75);
-        border: 1px solid #e2e8f0;
-        border-radius: 14px;
-        padding: 1rem 1.25rem;
-        box-shadow: 0 10px 30px rgba(12,33,80,0.07);
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
+# Authentication
+from login_page import (
+    check_authentication,
+    render_login_page,
+    render_user_info_sidebar,
+    get_current_organization_id,
+    can_user_approve_touchpoints
 )
+
+# Approval workflow
+from approval_workflow import (
+    render_approval_queue,
+    render_approval_history,
+    render_approval_stats
+)
+
+# Period management
+from period_management import render_period_management
+
+# ============================================================================
+# Authentication Check
+# ============================================================================
 
 DB_PATH = "attribution.db"
-SCHEMA_VERSION = "1.0"
-DEFAULT_SETTINGS = {
-    "enforce_split_cap": "true",  # whether account-level splits must sum to <= 100%
-    "si_auto_split_mode": "live_share",  # Implementation (SI) auto split rule
-    "si_fixed_percent": "20",  # used if mode is fixed_percent
-    "default_split_influence": "10",
-    "default_split_referral": "15",
-    "default_split_isv": "10",
-    "allow_manual_split_override": "false",
-    "enable_use_case_rules": "true",
-    "enable_account_rollup": "true",
-    "use_case_tag_source": "hybrid",
-    "prompt_rule_conversion": "Convert this rule description into JSON with keys name, action (allow/deny), when (partner_role?, stage?, min_estimated_value?, max_estimated_value?). Only return JSON.",
-    "prompt_relationship_summary": "Summarize account relationships with 3 concise bullets: health, risks, next steps.",
-    "prompt_ai_recommendations": "Recommend partner attributions. Return JSON list of {partner_id, recommended_role, recommended_split_percent, confidence, reasons}.",
-    "schema_version": SCHEMA_VERSION,
-    "account_rules": json.dumps([
-        {
-            "name": "Block SI below 50k estimated",
-            "action": "deny",
-            "when": {"partner_role": "Implementation (SI)", "max_estimated_value": 50000}
-        },
-        {
-            "name": "Allow all fallback",
-            "action": "allow",
-            "when": {}
-        }
-    ], indent=2),
-    "use_case_rules": json.dumps([
-        {
-            "name": "Allow all use cases",
-            "action": "allow",
-            "when": {}
-        }
-    ], indent=2),
-}
 
-PARTNER_ROLES = ["Implementation (SI)", "Influence", "Referral", "ISV"]
+# Check if user is authenticated
+if not check_authentication(DB_PATH):
+    render_login_page(DB_PATH)
+    st.stop()
 
+# ============================================================================
+# Page Configuration
+# ============================================================================
 
-
-# Initialize database
-db.init_db()
-db.seed_data_if_empty()
-
-# Helper function wrappers for compatibility
-def read_sql(sql: str, params: tuple = ()) -> pd.DataFrame:
-    return db.read_sql(sql, params)
-
-def run_sql(sql: str, params: tuple = ()):
-    db.run_sql(sql, params)
-
-def get_setting(key: str, default: str) -> str:
-    return db.get_setting(key, default)
-
-def set_setting(key: str, value: str):
-    db.set_setting(key, value)
-
-def get_setting_bool(key: str, default: bool) -> bool:
-    return db.get_setting_bool(key, default)
-
-def set_setting_bool(key: str, value: bool):
-    db.set_setting_bool(key, value)
-
-def should_enforce_split_cap() -> bool:
-    return attribution_engine.should_enforce_split_cap()
-
-def will_exceed_split_cap(account_id: str, partner_id: str, new_split: float):
-    return attribution_engine.will_exceed_split_cap(account_id, partner_id, new_split)
-
-def compute_si_auto_split(use_case_value: float, account_live_total: float, account_all_total: float, mode: str):
-    return attribution_engine.compute_si_auto_split(use_case_value, account_live_total, account_all_total, mode)
-
-def upsert_account_partner_from_use_case_partner(use_case_id: str, partner_id: str, partner_role: str, split_percent: float):
-    result = attribution_engine.upsert_account_partner_from_use_case_partner(use_case_id, partner_id, partner_role, split_percent)
-    return {"status": result.status, "account_id": result.account_id, "total_with_new": result.total_with_new}
-
-def upsert_manual_account_partner(account_id: str, partner_id: str, split_percent: float):
-    result = attribution_engine.upsert_manual_account_partner(account_id, partner_id, split_percent)
-    return {"status": result.status, "account_id": result.account_id, "total_with_new": result.total_with_new}
-
-def apply_rules_auto_assign(account_rollup_enabled: bool):
-    summary = attribution_engine.apply_rules_auto_assign(account_rollup_enabled)
-    return {
-        "applied": summary.applied,
-        "blocked_rule": summary.blocked_rule,
-        "blocked_cap": summary.blocked_cap,
-        "skipped_manual": summary.skipped_manual,
-        "details": summary.details
-    }
-
-def recompute_attribution_ledger(days: int = 30):
-    result = attribution_engine.recompute_attribution_ledger(days)
-    return {"inserted": result.inserted, "skipped": result.skipped, "blocked": result.blocked}
-
-def simulate_rule_impact(key: str, days: int = 60):
-    result = attribution_engine.simulate_rule_impact(key, days)
-    return {
-        "target": result.target,
-        "lookback_days": result.lookback_days,
-        "checked": result.checked,
-        "allowed": result.allowed,
-        "blocked": result.blocked,
-        "no_context": result.no_context,
-        "revenue_at_risk": result.revenue_at_risk,
-        "estimated_value_blocked": result.estimated_value_blocked,
-        "details": result.details
-    }
-
-def recompute_explanations(account_id: str):
-    return attribution_engine.recompute_explanations(account_id)
-
-def create_use_case(account_id: str, use_case_name: str, stage: str, estimated_value: float, target_close_date: str, tag_source: str = "app"):
-    return attribution_engine.create_use_case(account_id, use_case_name, stage, estimated_value, target_close_date, tag_source)
-
-def reset_demo():
-    db.reset_demo()
-
-def load_rules(key: str):
-    return rule_engine.load_rules(key)
-
-def evaluate_rules(ctx: dict, key: str):
-    result = rule_engine.evaluate_rules(ctx, key)
-    return (result.allowed, result.message, result.matched_any_rule, result.matched_rule_index, result.rule_name)
-
-def generate_rule_suggestion():
-    return rule_engine.generate_rule_suggestion()
-
-def validate_rule_obj(rule: dict) -> bool:
-    return rule_engine.validate_rule_obj(rule)
-
-def convert_nl_to_rule(text: str):
-    return ai_features.convert_nl_to_rule(text)
-
-def generate_relationship_summary(account_id: str):
-    return ai_features.generate_relationship_summary(account_id)
-
-def generate_ai_recommendations(account_id: str):
-    return ai_features.generate_ai_recommendations(account_id)
-
-def apply_recommendations(account_id: str, recs: list):
-    return ai_features.apply_recommendations(account_id, recs, attribution_engine)
-
-def infer_partner_role(account_name: str, use_case_name: str, partner_name: str, context: str):
-    return ai_features.infer_partner_role(account_name, use_case_name, partner_name, context)
-
-def render_apply_summary(summary: dict):
-    msg = render_apply_summary_dict(summary)
-    total_touched = sum(summary.get(k, 0) for k in ["applied", "blocked_rule", "blocked_cap", "skipped_manual"])
-    if total_touched == 0:
-        st.warning(msg)
-    else:
-        st.info(msg)
-    details = summary.get("details", [])
-    if details:
-        st.caption("Notes: " + " | ".join(details[:5]))
-
-# ----------------------------
-# App
-# ----------------------------
-# Already initialized in the wrapper functions section above
-# The db object is initialized and ready to use
-
-st.title("Attribution MVP (Streamlit)")
-
-# Light styling for readability
-st.markdown(
-    """
-    <style>
-    .small-cap {color:#6c757d; font-size:0.9rem;}
-    .section-title {margin-top: 0.25rem;}
-    </style>
-    """,
-    unsafe_allow_html=True,
+st.set_page_config(
+    page_title="Attribution MVP - Universal",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-# Quick snapshots
-accounts_df = read_sql("SELECT account_id, account_name FROM accounts;")
-partners_df = read_sql("SELECT partner_id, partner_name FROM partners;")
-use_cases_df = read_sql("SELECT use_case_id, account_id, stage FROM use_cases;")
-ap_df = read_sql("SELECT account_id, partner_id FROM account_partners;")
+# Theme-aware styling for light and dark modes
+st.markdown("""
+<style>
+/* Light theme (default) */
+body {
+    background: linear-gradient(135deg, #f5f7fa 0%, #e8f0ff 50%, #fdfbfb 100%);
+}
+section.main > div {
+    padding: 1.5rem 1.5rem 3rem 1.5rem;
+}
+.block-container {
+    padding-top: 1.5rem;
+}
+.stTabs [role="tablist"] {
+    gap: 0.25rem;
+}
+.stTabs [role="tab"] {
+    border-radius: 12px;
+    background: rgba(242, 244, 248, 0.8);
+    padding: 0.35rem 0.75rem;
+    border: 1px solid rgba(224, 230, 239, 0.8);
+}
+.stTabs [aria-selected="true"] {
+    background: rgba(215, 227, 255, 0.9);
+    border-color: rgba(182, 204, 255, 0.9);
+    color: #0b3ba7 !important;
+    font-weight: 600;
+}
+.metric-card {
+    background: rgba(255,255,255,0.75);
+    border: 1px solid #e2e8f0;
+    border-radius: 14px;
+    padding: 1rem 1.25rem;
+    box-shadow: 0 10px 30px rgba(12,33,80,0.07);
+}
 
-st.caption("Transactional unit = Use Case between Partner & Customer. Auto rollup to AccountPartner + manual overrides.")
-schema_stored = get_setting("schema_version", SCHEMA_VERSION)
-if schema_stored != SCHEMA_VERSION:
-    st.warning(
-        f"Database schema version mismatch (found {schema_stored}, expected {SCHEMA_VERSION}). "
-        "Use Admin → Reset demo data to refresh tables."
+/* Dark theme overrides */
+@media (prefers-color-scheme: dark) {
+    body {
+        background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f1419 100%);
+    }
+
+    .stTabs [role="tab"] {
+        background: rgba(45, 55, 72, 0.8);
+        border: 1px solid rgba(74, 85, 104, 0.8);
+        color: rgba(255, 255, 255, 0.9) !important;
+    }
+
+    .stTabs [aria-selected="true"] {
+        background: rgba(66, 153, 225, 0.3);
+        border-color: rgba(66, 153, 225, 0.6);
+        color: #90cdf4 !important;
+        font-weight: 600;
+    }
+
+    .metric-card {
+        background: rgba(45, 55, 72, 0.6);
+        border: 1px solid rgba(74, 85, 104, 0.6);
+        box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+    }
+
+    /* Better button visibility in dark mode */
+    .stButton > button {
+        background-color: rgba(66, 153, 225, 0.15) !important;
+        border: 2px solid rgba(66, 153, 225, 0.4) !important;
+        color: rgba(255, 255, 255, 0.95) !important;
+    }
+
+    .stButton > button:hover {
+        background-color: rgba(66, 153, 225, 0.25) !important;
+        border-color: rgba(66, 153, 225, 0.7) !important;
+        box-shadow: 0 0 12px rgba(66, 153, 225, 0.3) !important;
+    }
+
+    .stButton > button[kind="primary"] {
+        background-color: rgba(66, 153, 225, 0.4) !important;
+        border-color: rgba(66, 153, 225, 0.8) !important;
+    }
+
+    .stButton > button[kind="primary"]:hover {
+        background-color: rgba(66, 153, 225, 0.5) !important;
+        box-shadow: 0 0 16px rgba(66, 153, 225, 0.5) !important;
+    }
+}
+
+/* Streamlit's dark theme class override */
+[data-testid="stAppViewContainer"][data-theme="dark"] .stButton > button {
+    background-color: rgba(66, 153, 225, 0.15) !important;
+    border: 2px solid rgba(66, 153, 225, 0.4) !important;
+    color: rgba(255, 255, 255, 0.95) !important;
+}
+
+[data-testid="stAppViewContainer"][data-theme="dark"] .stButton > button:hover {
+    background-color: rgba(66, 153, 225, 0.25) !important;
+    border-color: rgba(66, 153, 225, 0.7) !important;
+    box-shadow: 0 0 12px rgba(66, 153, 225, 0.3) !important;
+}
+
+[data-testid="stAppViewContainer"][data-theme="dark"] .stButton > button[kind="primary"] {
+    background-color: rgba(66, 153, 225, 0.4) !important;
+    border-color: rgba(66, 153, 225, 0.8) !important;
+}
+
+[data-testid="stAppViewContainer"][data-theme="dark"] .stButton > button[kind="primary"]:hover {
+    background-color: rgba(66, 153, 225, 0.5) !important;
+    box-shadow: 0 0 16px rgba(66, 153, 225, 0.5) !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+
+# ============================================================================
+# Database & Session Management
+# ============================================================================
+
+# Initialize database (DB_PATH defined in authentication section above)
+if "db_initialized" not in st.session_state:
+    db = Database(DB_PATH)
+    db.init_db()
+    st.session_state.db_initialized = True
+
+    # Create default organization and admin user if they don't exist
+    from auth import create_default_organization_and_admin
+    create_default_organization_and_admin(DB_PATH)
+
+# Initialize session manager
+if "session_manager" not in st.session_state:
+    st.session_state.session_manager = SessionManager(DB_PATH)
+    st.session_state.session_manager.initialize_session_state()
+
+# Ensure we have some demo partners for backwards compatibility
+if not st.session_state.partners:
+    demo_partners = {
+        "P001": "CloudConsult Partners",
+        "P002": "DataWorks SI",
+        "P003": "AnalyticsPro",
+        "P004": "TechAlliance Inc",
+        "P005": "InnovateCo",
+        "P006": "SystemsPartner LLC",
+        "P007": "GlobalTech Solutions",
+        "P008": "EnterprisePartners"
+    }
+    for pid, pname in demo_partners.items():
+        st.session_state.session_manager.add_partner(pid, pname)
+
+# Global filters state (UI only, not persisted)
+if "global_filters" not in st.session_state:
+    st.session_state.global_filters = {
+        "date_range": (date.today() - timedelta(days=90), date.today()),
+        "selected_partners": [],
+        "deal_stage": "All",
+        "min_deal_size": 0
+    }
+
+# Metric visibility toggles (UI only, not persisted)
+if "visible_metrics" not in st.session_state:
+    st.session_state.visible_metrics = {
+        "revenue": True,
+        "deal_count": True,
+        "active_partners": True,
+        "avg_deal_size": True,
+        "win_rate": False,
+        "deal_velocity": False
+    }
+
+
+# ============================================================================
+# Helper Functions
+# ============================================================================
+
+def calculate_attribution_for_all_targets():
+    """
+    Run attribution calculations for all targets using all active rules.
+    Populates the ledger and persists to database.
+    """
+    engine = AttributionEngine()
+    session_mgr = st.session_state.session_manager
+
+    # Use session manager's recalculation which persists to database
+    entries_created = session_mgr.recalculate_attribution(engine)
+
+    return entries_created
+
+
+def get_ledger_as_dataframe() -> pd.DataFrame:
+    """
+    Convert ledger to DataFrame for dashboard queries.
+
+    Mimics the structure of the original attribution_events table.
+    """
+    if not st.session_state.ledger:
+        return pd.DataFrame(columns=[
+            "partner_id", "partner_name", "attributed_amount",
+            "split_percent", "revenue_date", "account_id"
+        ])
+
+    rows = []
+    for entry in st.session_state.ledger:
+        # Find the target to get revenue_date and metadata
+        target = next((t for t in st.session_state.targets if t.id == entry.target_id), None)
+        if not target:
+            continue
+
+        partner_name = st.session_state.partners.get(entry.partner_id, entry.partner_id)
+
+        rows.append({
+            "partner_id": entry.partner_id,
+            "partner_name": partner_name,
+            "attributed_amount": entry.attributed_value,
+            "split_percent": entry.split_percentage,
+            "revenue_date": target.timestamp.date() if isinstance(target.timestamp, datetime) else target.timestamp,
+            "account_id": target.metadata.get("account_id", "unknown"),
+            "accounts_influenced": 1  # Placeholder - would aggregate in real implementation
+        })
+
+    return pd.DataFrame(rows)
+
+
+def get_revenue_as_dataframe() -> pd.DataFrame:
+    """
+    Convert targets to revenue DataFrame for dashboard queries.
+    """
+    if not st.session_state.targets:
+        return pd.DataFrame(columns=["revenue_date", "amount", "account_id"])
+
+    rows = []
+    for target in st.session_state.targets:
+        rows.append({
+            "revenue_date": target.timestamp.date() if isinstance(target.timestamp, datetime) else target.timestamp,
+            "amount": target.value,
+            "account_id": target.metadata.get("account_id", "unknown")
+        })
+
+    return pd.DataFrame(rows)
+
+
+def apply_global_filters(ledger_entries: List[LedgerEntry]) -> List[LedgerEntry]:
+    """
+    Apply global filters to ledger entries.
+    Returns filtered list based on sidebar filter selections.
+    """
+    filtered = ledger_entries
+
+    # Date range filter
+    if st.session_state.global_filters["date_range"]:
+        start_date, end_date = st.session_state.global_filters["date_range"]
+        # Convert to datetime for comparison
+        start_dt = datetime.combine(start_date, datetime.min.time()) if isinstance(start_date, date) else start_date
+        end_dt = datetime.combine(end_date, datetime.max.time()) if isinstance(end_date, date) else end_date
+
+        filtered = [
+            entry for entry in filtered
+            if start_dt <= entry.calculation_timestamp <= end_dt
+        ]
+
+    # Partner filter
+    if st.session_state.global_filters["selected_partners"]:
+        filtered = [
+            entry for entry in filtered
+            if entry.partner_id in st.session_state.global_filters["selected_partners"]
+        ]
+
+    # Min deal size filter
+    if st.session_state.global_filters["min_deal_size"] > 0:
+        filtered = [
+            entry for entry in filtered
+            if entry.attributed_value >= st.session_state.global_filters["min_deal_size"]
+        ]
+
+    return filtered
+
+
+def export_ledger_to_csv(ledger_entries: List[LedgerEntry]) -> str:
+    """Convert ledger entries to CSV format for download."""
+    if not ledger_entries:
+        return "partner_id,partner_name,attributed_value,split_percentage,target_id,calculation_timestamp\n"
+
+    rows = []
+    for entry in ledger_entries:
+        partner_name = st.session_state.partners.get(entry.partner_id, entry.partner_id)
+        rows.append({
+            "partner_id": entry.partner_id,
+            "partner_name": partner_name,
+            "attributed_value": entry.attributed_value,
+            "split_percentage": entry.split_percentage,
+            "target_id": entry.target_id,
+            "rule_id": entry.rule_id,
+            "calculation_timestamp": entry.calculation_timestamp.strftime("%Y-%m-%d %H:%M:%S")
+        })
+
+    df = pd.DataFrame(rows)
+    return df.to_csv(index=False)
+
+
+# ============================================================================
+# Main App
+# ============================================================================
+
+st.title("🎯 Attribution MVP - Universal Architecture")
+st.caption("Config-driven partner attribution with CSV upload, templates, and natural language rules")
+
+# Sidebar stats and filters
+with st.sidebar:
+    # Show user info
+    render_user_info_sidebar()
+
+    st.markdown("### 🔍 Global Filters")
+    st.caption("Apply filters to all dashboards")
+
+    # Date range filter
+    date_range = st.date_input(
+        "📅 Date Range",
+        value=st.session_state.global_filters["date_range"],
+        key="date_range_input",
+        help="Filter data by date range"
     )
-if "ledger_bootstrap" not in st.session_state:
-    recompute_attribution_ledger(30)
-    st.session_state["ledger_bootstrap"] = True
+    if date_range and len(date_range) == 2:
+        st.session_state.global_filters["date_range"] = date_range
 
-# Tabs for clearer navigation
-accounts = read_sql("SELECT account_id, account_name FROM accounts ORDER BY account_name;")
+    # Partner filter
+    partner_tuples = sorted(
+        [(pid, name) for pid, name in st.session_state.partners.items()],
+        key=lambda x: x[1]
+    )
+    partner_display = [f"{name} ({pid})" for pid, name in partner_tuples]
 
+    selected_partners_display = st.multiselect(
+        "👥 Partners",
+        options=partner_display,
+        default=[] if not st.session_state.global_filters["selected_partners"] else [
+            f"{st.session_state.partners.get(pid, pid)} ({pid})"
+            for pid in st.session_state.global_filters["selected_partners"]
+        ],
+        help="Filter by specific partners (leave empty for all)"
+    )
+
+    # Extract partner IDs from display strings
+    if selected_partners_display:
+        selected_pids = []
+        for display_str in selected_partners_display:
+            if "(" in display_str and ")" in display_str:
+                # Extract PID from "Partner Name (P001)" format
+                pid = display_str.split("(")[-1].replace(")", "")
+                selected_pids.append(pid)
+        st.session_state.global_filters["selected_partners"] = selected_pids
+    else:
+        st.session_state.global_filters["selected_partners"] = []
+
+    # Min deal size filter
+    min_deal_size = st.number_input(
+        "💰 Min Deal Size",
+        min_value=0,
+        value=st.session_state.global_filters["min_deal_size"],
+        step=1000,
+        help="Show only deals above this value"
+    )
+    st.session_state.global_filters["min_deal_size"] = min_deal_size
+
+    # Show active filter count
+    active_filters = 0
+    if st.session_state.global_filters["selected_partners"]:
+        active_filters += 1
+    if st.session_state.global_filters["min_deal_size"] > 0:
+        active_filters += 1
+
+    if active_filters > 0:
+        st.info(f"🎯 {active_filters} filter(s) active")
+
+    # Reset filters button
+    if st.button("🔄 Reset Filters", width='stretch'):
+        st.session_state.global_filters = {
+            "date_range": (datetime.now() - timedelta(days=90), datetime.now()),
+            "selected_partners": [],
+            "deal_stage": "All",
+            "min_deal_size": 0
+        }
+        st.rerun()
+
+    st.markdown("---")
+
+    st.markdown("### 📊 Quick Stats")
+    # Apply filters to show filtered stats
+    filtered_ledger = apply_global_filters(st.session_state.ledger)
+    filtered_revenue = sum(entry.attributed_value for entry in filtered_ledger)
+
+    st.metric("Targets Loaded", len(st.session_state.targets))
+    st.metric("Ledger Entries", f"{len(filtered_ledger)} / {len(st.session_state.ledger)}")
+    st.metric("Filtered Revenue", f"${filtered_revenue:,.0f}")
+    st.metric("Active Rules", len([r for r in st.session_state.rules if r.active]))
+
+    st.markdown("---")
+    st.markdown("### 🏗️ Architecture")
+    st.info(f"""
+**Schema Version:** {SCHEMA_VERSION}
+
+**Tables:**
+- AttributionTarget
+- PartnerTouchpoint
+- AttributionRule
+- AttributionLedger
+    """)
+
+
+# Main tabs - Organized by role/workflow
 tabs = st.tabs([
-    "Dashboard",
-    "Admin",
-    "Account Partner 360",
-    "Account Drilldown",
-    "Relationship Summary (AI)",
-    "Audit Trail",
+    # 🎯 OPERATIONAL VIEWS (Daily Use)
+    "📊 Executive Dashboard",      # Tab 0: C-suite overview
+    "💼 Partner Sales",            # Tab 1: Partner performance & revenue
+    "🤝 Partner Management",       # Tab 2: Partner health & alerts
+    "💰 Deal Drilldown",           # Tab 3: Dispute resolution
+    "📋 Approval Queue",           # Tab 4: Partner touchpoint approvals
+
+    # ⚙️ SETUP & CONFIGURATION (Admin - Ordered by ease of use)
+    "📥 Data Import",              # Tab 5: Upload data (first step)
+    "🔗 Salesforce Integration",   # Tab 6: Connect Salesforce & segment modes
+    "🎨 Rule Builder",             # Tab 7: Visual rule creator (easy, no-code)
+    "📋 Rules & Templates",        # Tab 8: Manage existing rules
+    "🔄 Measurement Workflows",    # Tab 9: Advanced attribution methods
+
+    # 🔍 ADVANCED (Audit & Deep Dive)
+    "📅 Period Management",        # Tab 10: Close/lock attribution periods
+    "🔍 Ledger Explorer"           # Tab 11: Immutable audit trail
 ])
 
-# --- Tab 0: Dashboard ---
+
+# ============================================================================
+# TAB 0: DASHBOARD (PRESERVED FROM ORIGINAL)
+# ============================================================================
+
 with tabs[0]:
-    st.title("Attribution Dashboard")
-    st.caption("Executive overview of partner attribution performance and metrics")
+    col_title, col_export, col_customize = st.columns([3, 1, 1])
 
-    # Date range selector
-    col1, col2, col3 = st.columns([2, 2, 1])
-    with col1:
-        dashboard_days = st.selectbox(
-            "Time Period",
-            [7, 30, 60, 90, 180],
-            index=1,
-            format_func=lambda x: f"Last {x} days"
-        )
-    with col2:
-        refresh_dashboard = st.button("Refresh Dashboard", type="primary")
+    with col_title:
+        st.title("📊 Executive Dashboard")
+        st.caption("Executive overview of partner attribution performance and metrics")
 
-    # Calculate date range
-    end_date = date.today()
-    start_date = end_date - timedelta(days=dashboard_days)
-    start_str = start_date.isoformat()
-    end_str = end_date.isoformat()
-
-    # Fetch dashboard data
-    with st.spinner("Loading dashboard data..."):
-        # Revenue data
-        revenue_df = read_sql("""
-            SELECT revenue_date, amount, account_id
-            FROM revenue_events
-            WHERE revenue_date BETWEEN ? AND ?
-            ORDER BY revenue_date;
-        """, (start_str, end_str))
-
-        # Attribution data
-        attribution_df = read_sql("""
-            SELECT
-                p.partner_name,
-                p.partner_id,
-                SUM(ae.attributed_amount) AS attributed_amount,
-                AVG(ae.split_percent) AS avg_split_percent,
-                COUNT(DISTINCT ae.account_id) AS accounts_influenced
-            FROM attribution_events ae
-            JOIN partners p ON p.partner_id = ae.actor_id
-            WHERE ae.revenue_date BETWEEN ? AND ?
-            GROUP BY p.partner_name, p.partner_id
-            ORDER BY attributed_amount DESC;
-        """, (start_str, end_str))
-
-        # Use cases by stage
-        use_cases_df = read_sql("""
-            SELECT use_case_id, use_case_name, stage, estimated_value, target_close_date, account_id
-            FROM use_cases
-            WHERE estimated_value IS NOT NULL;
-        """)
-
-        # Partner roles distribution
-        partner_roles_df = read_sql("""
-            SELECT partner_role, use_case_id, partner_id
-            FROM use_case_partners;
-        """)
-
-        # Account health metrics
-        account_health_df = read_sql("""
-            SELECT
-                a.account_id,
-                a.account_name,
-                COUNT(DISTINCT u.use_case_id) AS active_use_cases,
-                COUNT(DISTINCT ap.partner_id) AS total_partners,
-                COALESCE(SUM(CASE WHEN u.stage = 'Live' THEN u.estimated_value ELSE 0 END), 0) AS live_value
-            FROM accounts a
-            LEFT JOIN use_cases u ON u.account_id = a.account_id
-            LEFT JOIN account_partners ap ON ap.account_id = a.account_id
-            GROUP BY a.account_id, a.account_name;
-        """)
-
-    # Key Metrics Row
-    st.markdown("### Key Metrics")
-    metric_cols = st.columns(5)
-
-    total_revenue = float(revenue_df['amount'].sum()) if not revenue_df.empty else 0.0
-    total_attributed = float(attribution_df['attributed_amount'].sum()) if not attribution_df.empty else 0.0
-    attribution_coverage = (total_attributed / total_revenue * 100) if total_revenue > 0 else 0.0
-    total_accounts = len(accounts_df)
-    total_partners = len(partners_df)
-    total_use_cases = len(use_cases_df)
-
-    with metric_cols[0]:
-        st.metric(
-            "Total Revenue",
-            f"${total_revenue:,.0f}",
-            delta=f"{dashboard_days}d period"
-        )
-
-    with metric_cols[1]:
-        st.metric(
-            "Attributed Revenue",
-            f"${total_attributed:,.0f}",
-            delta=f"{attribution_coverage:.1f}% coverage"
-        )
-
-    with metric_cols[2]:
-        st.metric(
-            "Active Accounts",
-            f"{total_accounts}",
-            delta=f"{len(ap_df)} with partners"
-        )
-
-    with metric_cols[3]:
-        st.metric(
-            "Partner Count",
-            f"{total_partners}",
-            delta=f"{len(attribution_df)} active"
-        )
-
-    with metric_cols[4]:
-        st.metric(
-            "Use Cases",
-            f"{total_use_cases}",
-            delta=f"{len(use_cases_df[use_cases_df['stage'] == 'Live'])} live"
-        )
-
-    st.markdown("---")
-
-    # Charts Row 1: Revenue and Attribution
-    st.markdown("### Revenue & Attribution Trends")
-    chart_col1, chart_col2 = st.columns(2)
-
-    with chart_col1:
-        st.plotly_chart(
-            create_revenue_over_time_chart(revenue_df),
-            use_container_width=True,
-            key="revenue_trend"
-        )
-
-    with chart_col2:
-        st.plotly_chart(
-            create_attribution_pie_chart(attribution_df),
-            use_container_width=True,
-            key="attribution_pie"
-        )
-
-    st.markdown("---")
-
-    # Charts Row 2: Partner Performance and Pipeline
-    st.markdown("### Partner Performance & Pipeline")
-    chart_col3, chart_col4 = st.columns(2)
-
-    with chart_col3:
-        st.plotly_chart(
-            create_partner_performance_bar_chart(attribution_df),
-            use_container_width=True,
-            key="partner_performance"
-        )
-
-    with chart_col4:
-        st.plotly_chart(
-            create_pipeline_funnel_chart(use_cases_df),
-            use_container_width=True,
-            key="pipeline_funnel"
-        )
-
-    st.markdown("---")
-
-    # Charts Row 3: Partner Roles and Attribution Waterfall
-    st.markdown("### Partner Insights")
-    chart_col5, chart_col6 = st.columns(2)
-
-    with chart_col5:
-        st.plotly_chart(
-            create_partner_role_distribution(partner_roles_df),
-            use_container_width=True,
-            key="role_distribution"
-        )
-
-    with chart_col6:
-        st.plotly_chart(
-            create_attribution_waterfall(attribution_df, total_revenue),
-            use_container_width=True,
-            key="waterfall"
-        )
-
-    st.markdown("---")
-
-    # Export Section
-    st.markdown("### Export Dashboard Data")
-    export_cols = st.columns(4)
-
-    with export_cols[0]:
-        if not revenue_df.empty:
-            csv_data = export_to_csv(revenue_df, "revenue_data.csv")
+    with col_export:
+        st.markdown("") # Spacing
+        if st.button("📥 Export CSV", key="exec_export", width='stretch'):
+            filtered_ledger = apply_global_filters(st.session_state.ledger)
+            csv_data = export_ledger_to_csv(filtered_ledger)
             st.download_button(
-                "Download Revenue CSV",
-                data=csv_data,
-                file_name=f"revenue_{start_str}_to_{end_str}.csv",
-                mime="text/csv",
-                use_container_width=True
+                "Download Data",
+                csv_data,
+                "executive_dashboard.csv",
+                "text/csv",
+                key="exec_download"
             )
 
-    with export_cols[1]:
-        if not attribution_df.empty:
-            csv_data = export_to_csv(attribution_df, "attribution_data.csv")
-            st.download_button(
-                "Download Attribution CSV",
-                data=csv_data,
-                file_name=f"attribution_{start_str}_to_{end_str}.csv",
-                mime="text/csv",
-                use_container_width=True
+    with col_customize:
+        st.markdown("") # Spacing
+        with st.popover("⚙️ Metrics", width='stretch'):
+            st.markdown("**Show/Hide Metrics**")
+            st.session_state.visible_metrics["revenue"] = st.checkbox(
+                "Total Revenue",
+                value=st.session_state.visible_metrics["revenue"]
+            )
+            st.session_state.visible_metrics["deal_count"] = st.checkbox(
+                "Deal Count",
+                value=st.session_state.visible_metrics["deal_count"]
+            )
+            st.session_state.visible_metrics["active_partners"] = st.checkbox(
+                "Active Partners",
+                value=st.session_state.visible_metrics["active_partners"]
+            )
+            st.session_state.visible_metrics["avg_deal_size"] = st.checkbox(
+                "Avg Deal Size",
+                value=st.session_state.visible_metrics["avg_deal_size"]
             )
 
-    with export_cols[2]:
-        if not use_cases_df.empty or not attribution_df.empty:
-            excel_data = export_to_excel({
-                "Revenue": revenue_df,
-                "Attribution": attribution_df,
-                "Use Cases": use_cases_df,
-                "Partner Roles": partner_roles_df
-            })
-            st.download_button(
-                "Download Excel Report",
-                data=excel_data,
-                file_name=f"dashboard_report_{start_str}_to_{end_str}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
+    # Use global filters from sidebar
+    start_date, end_date = st.session_state.global_filters["date_range"]
 
-    with export_cols[3]:
-        if not attribution_df.empty:
-            pdf_data = create_partner_performance_report(
-                attribution_df,
-                attribution_df,
-                f"{start_str} to {end_str}"
-            )
-            st.download_button(
-                "Download PDF Report",
-                data=pdf_data,
-                file_name=f"partner_performance_{start_str}_to_{end_str}.pdf",
-                mime="application/pdf",
-                use_container_width=True
-            )
+    # Convert date to datetime if needed
+    if isinstance(start_date, date) and not isinstance(start_date, datetime):
+        start_date = datetime.combine(start_date, datetime.min.time())
+    if isinstance(end_date, date) and not isinstance(end_date, datetime):
+        end_date = datetime.combine(end_date, datetime.max.time())
 
-    st.markdown("---")
+    # Show current filter info
+    period_days = (end_date - start_date).days + 1
+    st.info(f"📅 Showing data for: **{start_date.strftime('%b %d, %Y')}** to **{end_date.strftime('%b %d, %Y')}** ({period_days} days) • Change filters in sidebar")
 
-    # Top Performers Table
-    st.markdown("### Top Performing Partners")
-    if not attribution_df.empty:
-        top_partners = attribution_df.head(10).copy()
-        top_partners['attributed_amount'] = top_partners['attributed_amount'].apply(lambda x: f"${x:,.2f}")
-        top_partners['avg_split_percent'] = top_partners['avg_split_percent'].apply(lambda x: f"{x:.1%}")
-        st.dataframe(
-            top_partners[['partner_name', 'attributed_amount', 'accounts_influenced', 'avg_split_percent']],
-            use_container_width=True,
-            hide_index=True
-        )
-    else:
-        st.info("No partner attribution data available for the selected period.")
+    # Get data using new architecture
+    with st.spinner("📊 Loading dashboard data..."):
+        try:
+            revenue_df = get_revenue_as_dataframe()
+            attribution_df = get_ledger_as_dataframe()
+        except Exception as e:
+            st.error("⚠️ **Failed to load dashboard data**")
+            st.markdown(f"""
+            **Error:** {str(e)}
 
-# --- Tab 1: Admin ---
-with tabs[1]:
-    st.subheader("Settings")
-    st.caption("Configure guardrails and reset demo data.")
+            **Troubleshooting steps:**
+            1. Check if data was imported correctly in the Data Import tab
+            2. Verify attribution rules exist in Rules & Templates tab
+            3. Try recalculating attribution in Ledger Explorer
 
-    settings_left, settings_right = st.columns([2, 1])
-    with settings_left:
-        enforce_default = should_enforce_split_cap()
-        si_mode_default = get_setting("si_auto_split_mode", "live_share")
-        si_fixed_default = float(get_setting("si_fixed_percent", "20"))
-        with st.form("settings_form"):
-            enforce_cap = st.checkbox(
-                "Enforce account split cap (≤ 100% total per account)",
-                value=enforce_default,
-                help="When ON, adding or updating splits will be blocked if the account's total would exceed 100%. Turn OFF to allow totals > 100%.",
-            )
-            si_mode = st.selectbox(
-                "Implementation (SI) auto-split rule",
-                ["live_share", "fixed_percent", "manual_only"],
-                index=["live_share", "fixed_percent", "manual_only"].index(si_mode_default if si_mode_default in ["live_share", "fixed_percent", "manual_only"] else "live_share"),
-                help="live_share = auto split based on use case value vs account totals. fixed_percent = use a set % for SI. manual_only = always set manually.",
-            )
-            if si_mode == "fixed_percent":
-                si_fixed = st.slider("SI fixed percent", 0, 100, int(si_fixed_default))
-            else:
-                si_fixed = si_fixed_default
-            save_settings = st.form_submit_button("Save settings")
-            if save_settings:
-                set_setting_bool("enforce_split_cap", enforce_cap)
-                set_setting("si_auto_split_mode", si_mode)
-                set_setting("si_fixed_percent", str(si_fixed))
-                st.success(f"Saved. Enforce split cap = {'ON' if enforce_cap else 'OFF'}.")
-
-    with settings_right:
-        st.caption("Admin")
-        if st.button("Reset demo data (start fresh)"):
-            reset_demo()
-            st.success("Reset complete. Refresh the page.")
-        if st.button("Recompute ledger (last 30 days)"):
-            res = recompute_attribution_ledger(30)
-            st.success(f"Ledger recomputed: {res['inserted']} rows, {res['blocked']} blocked, {res['skipped']} skipped.")
-        with st.expander("Field palette (use @field in prompts)", expanded=False):
-            field_groups = {
-                "Use cases": ["use_case_name", "stage", "estimated_value", "target_close_date", "tag_source"],
-                "Use case ↔ partner": ["partner_role", "created_at"],
-                "Accounts": ["account_id", "account_name"],
-                "Partners": ["partner_id", "partner_name"],
-                "Revenue events": ["revenue_date", "amount"],
-                "Activities": ["activity_type", "activity_date", "notes"],
-            }
-            for group, fields in field_groups.items():
-                st.write(f"- **{group}**: " + ", ".join(f"`@{f}`" for f in fields))
-
-    st.markdown("---")
-    st.markdown('<a id="rule-builder"></a>', unsafe_allow_html=True)
-    st.subheader("Attribution configuration")
-    st.caption("Turn on exactly what you need. No presets—use your own data and rules.")
-    use_case_rules_enabled = st.checkbox("Gate use-case links with rules", value=get_setting_bool("enable_use_case_rules", True))
-    account_rollup_enabled = st.checkbox("Enable account-level rollup/splits", value=get_setting_bool("enable_account_rollup", True))
-    set_setting_bool("enable_use_case_rules", use_case_rules_enabled)
-    set_setting_bool("enable_account_rollup", account_rollup_enabled)
-
-    def render_rule_section(title: str, key: str, enabled: bool, applies_to_account: bool):
-        st.markdown(f"### {title}")
-        if not enabled:
-            st.warning("Disabled for current model.")
-            return
-        st.caption("Rules are created via AI suggestions or natural language below—no manual field-picking needed.")
-        rules = load_rules(key)
-        if f"ai_rule_suggestion_{key}" not in st.session_state:
-            st.session_state[f"ai_rule_suggestion_{key}"] = None
-        preview_data = read_sql("""
-            SELECT ucp.partner_role, u.stage, u.estimated_value
-            FROM use_case_partners ucp
-            JOIN use_cases u ON u.use_case_id = ucp.use_case_id;
-        """)
-        with st.expander("Current rules", expanded=False):
-            if rules:
-                rule_rows = []
-                for r in rules:
-                    when = r.get("when", {})
-                    rule_rows.append({
-                        "Name": r.get("name", ""),
-                        "Action": r.get("action", "allow"),
-                        "Partner role": when.get("partner_role", "Any"),
-                    })
-                st.dataframe(pd.DataFrame(rule_rows), use_container_width=True)
-            else:
-                st.info("No rules yet. Use AI suggestion or the natural-language converter below to add one.")
-
-        with st.expander("Quick actions", expanded=False):
-            if rules:
-                delete_idx = st.selectbox("Select rule to delete", list(range(len(rules))), format_func=lambda i: rules[i].get("name", f"Rule {i+1}"), key=f"delete_idx_{key}")
-                if st.button("Delete selected rule", key=f"delete_rule_{key}"):
-                    updated = [r for i, r in enumerate(rules) if i != delete_idx]
-                    set_setting(key, json.dumps(updated, indent=2))
-                    st.success("Rule deleted.")
-            if st.button("Add allow-all", key=f"allow_all_{key}"):
-                updated = rules + [{"name": "Allow all", "action": "allow", "when": {}}]
-                set_setting(key, json.dumps(updated, indent=2))
-                st.success("Allow-all rule added.")
-                if applies_to_account:
-                    render_apply_summary(apply_rules_auto_assign(account_rollup_enabled))
-            suggestion = st.session_state.get(f"ai_rule_suggestion_{key}")
-            if st.button("Generate suggestion", key=f"gen_suggest_{key}"):
-                st.session_state[f"ai_rule_suggestion_{key}"] = generate_rule_suggestion()
-            if suggestion:
-                st.code(json.dumps(suggestion, indent=2), language="json")
-                if st.button("Use suggestion", key=f"use_suggest_{key}"):
-                    updated = rules + [suggestion]
-                    set_setting(key, json.dumps(updated, indent=2))
-                    st.success("Suggested rule added.")
-                    st.session_state[f"ai_rule_suggestion_{key}"] = None
-
-        with st.expander("Preview / Apply", expanded=False):
-            if st.button("Preview matches", key=f"preview_{key}"):
-                if preview_data.empty:
-                    st.info("No existing links to preview.")
-                else:
-                    matches = 0
-                    for _, r in preview_data.iterrows():
-                        if evaluate_rules({
-                            "partner_role": r["partner_role"],
-                            "stage": r["stage"],
-                            "estimated_value": r["estimated_value"],
-                        }, key=key)[0]:
-                            matches += 1
-                    st.info(f"Would affect {matches} of {len(preview_data)} existing links.")
-            if applies_to_account and st.button("Apply to account splits now", key=f"apply_{key}"):
-                render_apply_summary(apply_rules_auto_assign(account_rollup_enabled))
-            elif not applies_to_account:
-                st.caption("Use-case rules gate link creation. Account splits are unaffected.")
-
-    render_rule_section("Use Case Rules (per-link gating)", key="use_case_rules", enabled=use_case_rules_enabled, applies_to_account=False)
-    render_rule_section("Account Rules (roll up to account splits)", key="account_rules", enabled=account_rollup_enabled, applies_to_account=True)
-
-    st.markdown("---")
-    st.subheader("Natural-language rules → structured")
-    nl_text = st.text_area("Describe a rule in plain English", height=100)
-    target_rule_set = st.selectbox("Save to", ["use_case_rules", "account_rules"], format_func=lambda k: "Use case rules" if k == "use_case_rules" else "Account rules")
-    if st.button("Convert to rule JSON"):
-        rule, err = convert_nl_to_rule(nl_text)
-        if not validate_rule_obj(rule):
-            st.error("Could not parse into a valid rule. Please refine the text.")
-        else:
-            st.code(json.dumps(rule, indent=2), language="json")
-            preview_links = read_sql("""
-                SELECT ucp.partner_role, u.stage, u.estimated_value
-                FROM use_case_partners ucp
-                JOIN use_cases u ON u.use_case_id = ucp.use_case_id;
+            If the issue persists, please refresh the page.
             """)
-            matches = 0
-            if not preview_links.empty:
-                for _, r in preview_links.iterrows():
-                    if evaluate_rules(
-                        {"partner_role": r["partner_role"], "stage": r["stage"], "estimated_value": r["estimated_value"]},
-                        key=target_rule_set
-                    )[0]:
-                        matches += 1
-                st.info(f"Would match {matches}/{len(preview_links)} existing links.")
-            if st.button("Add converted rule"):
-                rules = load_rules(target_rule_set)
-                rules.append(rule)
-                set_setting(target_rule_set, json.dumps(rules, indent=2))
-                st.success("Rule added.")
-                if target_rule_set == "account_rules":
-                    render_apply_summary(apply_rules_auto_assign(account_rollup_enabled))
-        if err:
-            st.caption(f"LLM note: {err}")
+            st.stop()
 
-    st.markdown("---")
-    st.subheader("Rule impact simulator")
-    sim_cols = st.columns([2, 1, 1])
-    sim_target = sim_cols[0].selectbox(
-        "Which rule set?",
-        ["account_rules", "use_case_rules"],
-        format_func=lambda k: "Account rules (rollup/ledger)" if k == "account_rules" else "Use case rules (link gating)",
-    )
-    lookback = sim_cols[1].slider(
-        "Lookback (days, for revenue at risk)",
-        min_value=7,
-        max_value=180,
-        value=60,
-        help="Used for revenue-at-risk when simulating account rules.",
-        disabled=sim_target != "account_rules",
-    )
-    if sim_cols[2].button("Run simulation"):
-        res = simulate_rule_impact(sim_target, days=lookback if sim_target == "account_rules" else 60)
-        st.info(
-            f"Checked {res['checked']} links. Allowed {res['allowed']}, blocked {res['blocked']}, "
-            f"missing context {res['no_context']}."
-        )
-        metric_cols = st.columns(2)
-        if sim_target == "account_rules":
-            metric_cols[0].metric("Revenue at risk", f"{res['revenue_at_risk']:,.0f}")
-            metric_cols[1].metric("Lookback (days)", res["lookback_days"])
+    # Show dashboard content only if data is loaded
+    if len(st.session_state.targets) > 0:
+        # Apply global filters
+        filtered_ledger = apply_global_filters(st.session_state.ledger)
+
+        # Convert filtered ledger back to DataFrame
+        if filtered_ledger:
+            filtered_rows = []
+            for entry in filtered_ledger:
+                target = next((t for t in st.session_state.targets if t.id == entry.target_id), None)
+                if not target:
+                    continue
+                partner_name = st.session_state.partners.get(entry.partner_id, entry.partner_id)
+                filtered_rows.append({
+                    "partner_id": entry.partner_id,
+                    "partner_name": partner_name,
+                    "attributed_amount": entry.attributed_value,
+                    "split_percent": entry.split_percentage,
+                    "revenue_date": target.timestamp.date() if isinstance(target.timestamp, datetime) else target.timestamp,
+                    "account_id": target.metadata.get("account_id", "unknown"),
+                    "accounts_influenced": 1
+                })
+            attribution_df = pd.DataFrame(filtered_rows)
         else:
-            metric_cols[0].metric("Est. value blocked", f"{res['estimated_value_blocked']:,.0f}")
-            metric_cols[1].metric("Lookback (days)", res["lookback_days"])
-        if res.get("details"):
-            with st.expander("Blocked details (sample)"):
-                st.write("\n".join(res["details"][:15]))
+            attribution_df = pd.DataFrame(columns=["partner_id", "partner_name", "attributed_amount", "split_percent", "revenue_date", "account_id"])
 
-    st.markdown("---")
-    st.subheader("AI recommendations (account-level)")
-    acct_map_ai = {f"{row['account_name']} ({row['account_id']})": row["account_id"] for _, row in accounts.iterrows()}
-    if acct_map_ai:
-        acct_choice_ai = st.selectbox("Account for recommendations", list(acct_map_ai.keys()), key="ai_recs_account")
-        acct_id_ai = acct_map_ai[acct_choice_ai]
-        if st.button("AI recommend attributions for this account"):
-            recs, err = generate_ai_recommendations(acct_id_ai)
-            run_sql("""
-            INSERT INTO ai_recommendations(account_id, created_at, recommendations_json)
-            VALUES (?, ?, ?);
-            """, (acct_id_ai, datetime.utcnow().isoformat(), json.dumps(recs, indent=2)))
-            st.code(json.dumps(recs, indent=2), language="json")
-            if err:
-                st.caption(f"LLM note: {err}")
-        latest_recs = read_sql("""
-          SELECT recommendations_json, created_at
-          FROM ai_recommendations
-          WHERE account_id = ?
-          ORDER BY created_at DESC
-          LIMIT 1;
-        """, (acct_id_ai,))
-        if not latest_recs.empty:
-            recs = safe_json_loads(latest_recs.loc[0, "recommendations_json"]) or []
-            st.caption(f"Latest recommendations at {latest_recs.loc[0, 'created_at']}")
-            st.code(json.dumps(recs, indent=2), language="json")
-            if st.button("Apply recommendations"):
-                stats = apply_recommendations(acct_id_ai, recs)
-                st.success(f"Applied: {stats['applied']}, blocked cap: {stats['blocked_cap']}, skipped manual: {stats['skipped_manual']}, invalid: {stats['invalid']}")
-                recompute_attribution_ledger(30)
+        # Filter revenue by date range
+        if not revenue_df.empty:
+            revenue_df = revenue_df[
+                (pd.to_datetime(revenue_df["revenue_date"]) >= pd.to_datetime(start_date)) &
+                (pd.to_datetime(revenue_df["revenue_date"]) <= pd.to_datetime(end_date))
+            ]
+
+        # Aggregate attribution by partner (for charts)
+        if not attribution_df.empty:
+            attribution_agg = attribution_df.groupby(["partner_id", "partner_name"]).agg({
+                "attributed_amount": "sum",
+                "split_percent": "mean",
+                "account_id": "nunique"
+            }).reset_index()
+            attribution_agg.columns = ["partner_id", "partner_name", "attributed_amount", "avg_split_percent", "accounts_influenced"]
+        else:
+            attribution_agg = pd.DataFrame(columns=["partner_id", "partner_name", "attributed_amount", "avg_split_percent", "accounts_influenced"])
+
+        # KEY METRICS ROW (PRESERVED)
+        st.markdown("### Key Metrics")
+        metric_cols = st.columns(5)
+
+        total_revenue = float(revenue_df["amount"].sum()) if not revenue_df.empty else 0.0
+        total_attributed = float(attribution_agg["attributed_amount"].sum()) if not attribution_agg.empty else 0.0
+        attribution_coverage = (total_attributed / total_revenue * 100) if total_revenue > 0 else 0.0
+
+        with metric_cols[0]:
+            period_days = (end_date - start_date).days + 1
+            st.metric(
+                "Total Revenue",
+                f"${total_revenue:,.0f}",
+                delta=f"{period_days}d period",
+                help="Sum of all closed opportunity/deal values in the selected time period"
+            )
+
+        with metric_cols[1]:
+            st.metric(
+                "Attributed Revenue",
+                f"${total_attributed:,.0f}",
+                delta=f"{attribution_coverage:.1f}% coverage",
+                help="Total revenue attributed to partners based on active attribution rules. Coverage shows % of revenue with partner attribution."
+            )
+
+        with metric_cols[2]:
+            unique_accounts = revenue_df["account_id"].nunique() if not revenue_df.empty else 0
+            st.metric(
+                "Active Accounts",
+                f"{unique_accounts}",
+                delta=f"{len(st.session_state.targets)} targets",
+                help="Number of unique customer accounts with closed deals in this period"
+            )
+
+        with metric_cols[3]:
+            unique_partners = attribution_agg["partner_id"].nunique() if not attribution_agg.empty else 0
+            st.metric(
+                "Partner Count",
+                f"{len(st.session_state.partners)}",
+                delta=f"{unique_partners} active",
+                help="Total partners in system. 'Active' shows partners with attributed revenue in this period."
+            )
+
+        with metric_cols[4]:
+            st.metric(
+                "Touchpoints",
+                f"{len(st.session_state.touchpoints)}",
+                delta=f"{len(st.session_state.ledger)} ledger entries",
+                help="Total partner interactions/engagements logged. Ledger entries show calculated attribution splits."
+            )
+
+        st.markdown("---")
+
+        # CHARTS ROW 1: Revenue and Attribution (PRESERVED)
+        st.markdown("### Revenue & Attribution Trends")
+        chart_col1, chart_col2 = st.columns(2)
+
+        with chart_col1:
+            st.plotly_chart(
+                create_revenue_over_time_chart(revenue_df),
+                width='stretch',
+                key="revenue_trend"
+            )
+
+        with chart_col2:
+            st.plotly_chart(
+                create_attribution_pie_chart(attribution_agg),
+                width='stretch',
+                key="attribution_pie"
+            )
+
+        st.markdown("---")
+
+        # CHARTS ROW 2: Partner Performance (PRESERVED)
+        st.markdown("### Partner Performance")
+        chart_col3, chart_col4 = st.columns(2)
+
+        with chart_col3:
+            st.plotly_chart(
+                create_partner_performance_bar_chart(attribution_agg),
+                width='stretch',
+                key="partner_performance"
+            )
+
+        with chart_col4:
+            # Partner role distribution (need touchpoint data)
+            touchpoint_roles_df = pd.DataFrame([
+                {"partner_role": tp.role, "partner_id": tp.partner_id, "use_case_id": tp.target_id}
+                for tp in st.session_state.touchpoints
+            ])
+
+            st.plotly_chart(
+                create_partner_role_distribution(touchpoint_roles_df),
+                width='stretch',
+                key="role_distribution"
+            )
+
+        st.markdown("---")
+
+        # CHARTS ROW 3: Deal Analysis
+        st.markdown("### Deal Analysis")
+        chart_col5, chart_col6 = st.columns(2)
+
+        with chart_col5:
+            st.plotly_chart(
+                create_deal_value_distribution(revenue_df),
+                width='stretch',
+                key="deal_value_dist"
+            )
+
+        with chart_col6:
+            # Attribution Waterfall
+            st.plotly_chart(
+                create_attribution_waterfall(attribution_agg, total_revenue),
+                width='stretch',
+                key="waterfall"
+            )
+
+        st.markdown("---")
+
+        # EXPORT SECTION (PRESERVED)
+        st.markdown("### Export Dashboard Data")
+        export_cols = st.columns(4)
+
+        with export_cols[0]:
+            if not revenue_df.empty:
+                csv_data = export_to_csv(revenue_df, "revenue_data.csv")
+                st.download_button(
+                    "Download Revenue CSV",
+                    data=csv_data,
+                    file_name=f"revenue_{start_date}_to_{end_date}.csv",
+                    mime="text/csv",
+                    width='stretch'
+                )
+
+        with export_cols[1]:
+            if not attribution_agg.empty:
+                excel_data = export_to_excel({
+                    "Revenue": revenue_df,
+                    "Attribution": attribution_agg
+                })
+                st.download_button(
+                    "Download Excel",
+                    data=excel_data,
+                    file_name=f"dashboard_{start_date}_to_{end_date}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    width='stretch'
+                )
+
+        with export_cols[2]:
+            if not attribution_agg.empty:
+                try:
+                    # Generate executive PDF report
+                    with st.spinner("📄 Generating executive PDF report..."):
+                        ledger_df = get_ledger_as_dataframe()
+
+                        executive_pdf = generate_executive_report(
+                            report_date_range=f"{start_date} to {end_date}",
+                            total_revenue=total_revenue,
+                            total_attributed=total_attributed,
+                            attribution_coverage=attribution_coverage,
+                            unique_partners=unique_partners,
+                            top_partners=attribution_agg,
+                            ledger_df=ledger_df
+                        )
+                    st.download_button(
+                        "📊 Executive Report (PDF)",
+                        data=executive_pdf,
+                        file_name=f"attribution_executive_report_{datetime.now().strftime('%Y%m%d')}.pdf",
+                        mime="application/pdf",
+                        width='stretch',
+                        help="Beautiful executive report with charts and insights"
+                    )
+                except Exception as e:
+                    st.error("❌ Failed to generate PDF report")
+                    with st.expander("Show error details"):
+                        st.code(str(e))
+                    st.markdown("""
+                    **Try these steps:**
+                    1. Ensure attribution data is calculated
+                    2. Check that all partners have names
+                    3. Try downloading CSV/Excel instead
+                    """)
+            else:
+                st.info("💡 No attribution data available. Import data and run attribution to generate reports.")
+
+        # Top Partners Table (PRESERVED)
+        st.markdown("---")
+        st.markdown("### Top 10 Partners by Attributed Revenue")
+        if not attribution_agg.empty:
+            top_10 = attribution_agg.nlargest(10, "attributed_amount")
+            st.dataframe(
+                top_10[["partner_name", "attributed_amount", "avg_split_percent", "accounts_influenced"]],
+                width='stretch'
+            )
+
+        # PARTNER-SPECIFIC REPORTS
+        st.markdown("---")
+        st.markdown("### 📄 Partner-Specific Reports")
+        st.caption("Generate individual attribution statements for each partner")
+
+        if not attribution_agg.empty:
+            # INDIVIDUAL PARTNER REPORT
+            st.markdown("#### Single Partner Statement")
+            partner_report_col1, partner_report_col2 = st.columns([3, 1])
+
+            with partner_report_col1:
+                # Partner selector
+                partner_options = {
+                    f"{row.partner_name} ({row.partner_id})": row.partner_id
+                    for _, row in attribution_agg.iterrows()
+                }
+                selected_partner_display = st.selectbox(
+                    "Select Partner",
+                    options=list(partner_options.keys()),
+                    help="Choose a partner to generate their attribution statement"
+                )
+                selected_partner_id = partner_options[selected_partner_display]
+
+            with partner_report_col2:
+                # Generate button
+                partner_name = selected_partner_display.split(" (")[0]
+                partner_pdf = generate_partner_statement_pdf(
+                    partner_id=selected_partner_id,
+                    partner_name=partner_name,
+                    ledger_entries=st.session_state.ledger,
+                    targets=st.session_state.targets,
+                    report_period=f"{start_date} to {end_date}"
+                )
+
+                st.download_button(
+                    "📥 Download Statement",
+                    data=partner_pdf,
+                    file_name=f"partner_statement_{selected_partner_id}_{datetime.now().strftime('%Y%m%d')}.pdf",
+                    mime="application/pdf",
+                    width='stretch',
+                    help="PDF statement showing this partner's attribution details"
+                )
+
+            # BULK EXPORT
+            st.markdown("#### Bulk Export (All Partners)")
+            bulk_col1, bulk_col2 = st.columns([3, 1])
+
+            with bulk_col1:
+                num_partners_with_attr = len(attribution_agg)
+                st.info(f"💼 Generate statements for all {num_partners_with_attr} partners with attribution. Perfect for monthly payout processes!")
+
+            with bulk_col2:
+                with st.spinner("📦 Generating bulk statements..."):
+                    bulk_zip = generate_bulk_partner_statements(
+                        ledger_entries=st.session_state.ledger,
+                        targets=st.session_state.targets,
+                        partners=st.session_state.partners,
+                        report_period=f"{start_date} to {end_date}"
+                    )
+
+                st.download_button(
+                    "📦 Download All (ZIP)",
+                    data=bulk_zip,
+                    file_name=f"partner_statements_bulk_{datetime.now().strftime('%Y%m%d')}.zip",
+                    mime="application/zip",
+                    width='stretch',
+                    help=f"ZIP file containing {num_partners_with_attr} individual partner PDFs"
+                )
+        else:
+            st.info("No partner attribution data available. Load data and run attribution calculations to generate partner reports.")
     else:
-        st.info("No accounts found.")
+        st.info("### 👋 Welcome to Attribution MVP!")
+        st.markdown("""
+        You haven't loaded any data yet. To get started:
+
+        **Option 1: Try Demo Data (Recommended)**
+        1. Click the **"📥 Data Import"** tab above
+        2. Click **"🚀 Load Demo Data"** button
+        3. Return to this Dashboard to see attribution metrics
+
+        **Option 2: Upload Your Own Data**
+        1. Go to **"📥 Data Import"** tab
+        2. Upload your target data (opportunities/deals)
+        3. Upload partner touchpoint data
+        4. Create attribution rules in **"⚙️ Rule Builder"** tab
+
+        **What you'll see here:**
+        - 📊 Revenue and attribution metrics
+        - 📈 Partner performance charts
+        - 🏆 Top contributing partners
+        - 📋 Attribution ledger entries
+        """)
+
+
+# ============================================================================
+# TAB 1: PARTNER SALES DASHBOARD (NEW)
+# ============================================================================
+
+with tabs[1]:
+    col_title, col_export = st.columns([4, 1])
+
+    with col_title:
+        st.title("💼 Partner Sales Dashboard")
+        st.caption("Track revenue growth, performance trends, and actionable insights for partner sales managers")
+
+    with col_export:
+        st.markdown("") # Spacing
+        if st.button("📥 Export CSV", key="sales_export", width='stretch'):
+            filtered_ledger = apply_global_filters(st.session_state.ledger)
+            csv_data = export_ledger_to_csv(filtered_ledger)
+            st.download_button(
+                "Download Data",
+                csv_data,
+                "partner_sales_dashboard.csv",
+                "text/csv",
+                key="sales_download"
+            )
 
     st.markdown("---")
-    st.subheader("LLM prompt settings")
-    st.caption("Tune the prompts the AI features use. You can reference fields with @stage, @estimated_value, @created_at, etc.")
-    col_p1, col_p2 = st.columns(2)
-    with col_p1:
-        pr_rule = st.text_area(
-            "Rule conversion prompt",
-            value=get_setting("prompt_rule_conversion", DEFAULT_SETTINGS["prompt_rule_conversion"]),
-            height=120,
+
+    # Use global filters
+    start_date, end_date = st.session_state.global_filters["date_range"]
+    if isinstance(start_date, date) and not isinstance(start_date, datetime):
+        start_date = datetime.combine(start_date, datetime.min.time())
+    if isinstance(end_date, date) and not isinstance(end_date, datetime):
+        end_date = datetime.combine(end_date, datetime.max.time())
+
+    period_days = (end_date - start_date).days + 1
+    st.info(f"📅 Showing data for: **{start_date.strftime('%b %d, %Y')}** to **{end_date.strftime('%b %d, %Y')}** ({period_days} days) • Change filters in sidebar")
+
+    # Date Range Selector with Comparison Toggle
+    col1, col2, col3 = st.columns([2, 2, 1])
+
+    with col1:
+        period_type = st.selectbox(
+            "Period Type",
+            ["Quick Range", "Month", "Quarter"],
+            key="sales_period_type",
+            help="Select reporting period"
         )
-        pr_summary = st.text_area(
-            "Relationship summary prompt",
-            value=get_setting("prompt_relationship_summary", DEFAULT_SETTINGS["prompt_relationship_summary"]),
-            height=120,
+
+    with col2:
+        if period_type == "Quick Range":
+            days = st.selectbox(
+                "Time Range",
+                [7, 30, 60, 90],
+                index=1,
+                format_func=lambda x: f"Last {x} days",
+                key="sales_days"
+            )
+            end_date = date.today()
+            start_date = end_date - timedelta(days=days)
+        elif period_type == "Month":
+            months = []
+            today = date.today()
+            for i in range(6):
+                month_date = today.replace(day=1) - timedelta(days=i*30)
+                months.append((month_date.strftime("%B %Y"), month_date.year, month_date.month))
+
+            selected_month = st.selectbox(
+                "Select Month",
+                [m[0] for m in months],
+                key="sales_month"
+            )
+
+            year, month = next((m[1], m[2]) for m in months if m[0] == selected_month)
+            start_date = date(year, month, 1)
+            last_day = calendar.monthrange(year, month)[1]
+            end_date = date(year, month, last_day)
+        else:  # Quarter
+            quarters = []
+            today = date.today()
+            current_quarter = (today.month - 1) // 3 + 1
+            current_year = today.year
+
+            for i in range(4):
+                q = current_quarter - i
+                y = current_year
+                while q <= 0:
+                    q += 4
+                    y -= 1
+                quarters.append((f"Q{q} {y}", y, q))
+
+            selected_quarter = st.selectbox(
+                "Select Quarter",
+                [q[0] for q in quarters],
+                key="sales_quarter"
+            )
+
+            year, quarter = next((q[1], q[2]) for q in quarters if q[0] == selected_quarter)
+            start_month = (quarter - 1) * 3 + 1
+            start_date = date(year, start_month, 1)
+            end_month = start_month + 2
+            last_day = calendar.monthrange(year, end_month)[1]
+            end_date = date(year, end_month, last_day)
+
+    with col3:
+        compare_enabled = st.checkbox(
+            "Compare",
+            value=True,
+            key="sales_compare",
+            help="Compare to previous period"
         )
-    with col_p2:
-        pr_recs = st.text_area(
-            "AI recommendation prompt",
-            value=get_setting("prompt_ai_recommendations", DEFAULT_SETTINGS["prompt_ai_recommendations"]),
-            height=120,
-        )
-    if st.button("Save prompts"):
-        set_setting("prompt_rule_conversion", pr_rule)
-        set_setting("prompt_relationship_summary", pr_summary)
-        set_setting("prompt_ai_recommendations", pr_recs)
-        st.success("Prompts updated.")
+
+    # Calculate previous period dates if comparison enabled
+    if compare_enabled:
+        period_days = (end_date - start_date).days + 1
+        previous_end = start_date - timedelta(days=1)
+        previous_start = previous_end - timedelta(days=period_days - 1)
+    else:
+        previous_start = previous_end = None
 
     st.markdown("---")
-    st.subheader("Bulk Import / Export")
-    st.caption("Import data from CSV or export all data for backup.")
 
-    bulk_tabs = st.tabs(["Import", "Export", "Templates"])
+    # Get data
+    if st.session_state.targets and st.session_state.ledger:
+        # Calculate period comparison
+        if compare_enabled and previous_start and previous_end:
+            try:
+                comparison = calculate_period_comparison(
+                    st.session_state.ledger,
+                    st.session_state.targets,
+                    start_date,
+                    end_date,
+                    previous_start,
+                    previous_end
+                )
+            except Exception as e:
+                st.error(f"Error calculating period comparison: {str(e)}")
+                comparison = None
+        else:
+            comparison = None
 
-    with bulk_tabs[0]:
-        st.markdown("### Bulk Import")
-        import_type = st.selectbox(
-            "Select data type to import",
-            ["accounts", "partners", "use_cases", "use_case_partners"],
-            format_func=lambda x: x.replace("_", " ").title()
+        # Key Metrics Row
+        st.markdown("### Key Metrics")
+        metric_cols = st.columns(4)
+
+        # Calculate current period metrics
+        current_ledger = [
+            e for e in st.session_state.ledger
+            if start_date <= e.calculation_timestamp.date() <= end_date
+        ]
+        current_revenue = sum(e.attributed_value for e in current_ledger)
+        current_deals = len(set(e.target_id for e in current_ledger))
+
+        current_targets = [
+            t for t in st.session_state.targets
+            if start_date <= t.timestamp.date() <= end_date
+            and t.metadata.get('is_closed', False)
+        ]
+        total_revenue = sum(t.value for t in current_targets)
+        coverage = (current_revenue / total_revenue * 100) if total_revenue > 0 else 0
+
+        with metric_cols[0]:
+            if comparison:
+                delta = format_growth_percentage(comparison.growth_percentage / 100)
+                st.metric("Attributed Revenue", format_currency_compact(current_revenue), delta=delta)
+            else:
+                st.metric("Attributed Revenue", format_currency_compact(current_revenue))
+
+        with metric_cols[1]:
+            if comparison:
+                delta = format_growth_percentage(comparison.deal_growth_percentage / 100)
+                st.metric("Deals", str(current_deals), delta=delta)
+            else:
+                st.metric("Deals", str(current_deals))
+
+        with metric_cols[2]:
+            if comparison:
+                coverage_delta = comparison.current_coverage - comparison.previous_coverage
+                delta_str = f"{coverage_delta:+.1f}%"
+                st.metric("Coverage", f"{coverage:.1f}%", delta=delta_str)
+            else:
+                st.metric("Coverage", f"{coverage:.1f}%")
+
+        with metric_cols[3]:
+            unique_partners = len(set(e.partner_id for e in current_ledger))
+            st.metric("Active Partners", str(unique_partners))
+
+        st.markdown("---")
+
+        # Alerts & Insights Section
+        st.markdown("### 🚨 Alerts & Insights")
+
+        try:
+            alerts = detect_alerts(
+                st.session_state.targets,
+                st.session_state.ledger,
+                st.session_state.touchpoints,
+                st.session_state.partners,
+                lookback_days=30
+            )
+
+            if alerts:
+                for alert in alerts[:3]:  # Show top 3
+                    severity_icon = {"critical": "🔴", "warning": "⚠️", "info": "💡"}
+                    icon = severity_icon.get(alert.severity, "ℹ️")
+
+                    with st.expander(f"{icon} {alert.title}", expanded=(alert.severity == "critical")):
+                        st.markdown(f"**Description:** {alert.description}")
+                        if alert.partner_name:
+                            st.markdown(f"**Partner:** {alert.partner_name}")
+                        st.info(f"💡 **Action:** {alert.recommended_action}")
+            else:
+                st.success("✅ No alerts. All metrics within expected ranges.")
+        except Exception as e:
+            st.warning(f"Unable to generate alerts: {str(e)}")
+
+        st.markdown("---")
+
+        # Charts Row
+        st.markdown("### Performance Analysis")
+        chart_col1, chart_col2 = st.columns(2)
+
+        with chart_col1:
+            if comparison:
+                try:
+                    fig = create_period_comparison_chart(comparison, metric_type="revenue")
+                    st.plotly_chart(fig, width='stretch', key="sales_comparison_chart")
+                except Exception as e:
+                    st.error(f"Error creating comparison chart: {str(e)}")
+            else:
+                # Show revenue trend without comparison
+                revenue_df = get_revenue_as_dataframe()
+                if not revenue_df.empty:
+                    filtered_revenue = revenue_df[
+                        (pd.to_datetime(revenue_df["revenue_date"]) >= pd.to_datetime(start_date)) &
+                        (pd.to_datetime(revenue_df["revenue_date"]) <= pd.to_datetime(end_date))
+                    ]
+                    st.plotly_chart(
+                        create_revenue_over_time_chart(filtered_revenue),
+                        width='stretch',
+                        key="sales_revenue_trend"
+                    )
+
+        with chart_col2:
+            # Top partners bar chart
+            attribution_agg = get_ledger_as_dataframe()
+            if not attribution_agg.empty:
+                filtered_attr = attribution_agg[
+                    (pd.to_datetime(attribution_agg["revenue_date"]) >= pd.to_datetime(start_date)) &
+                    (pd.to_datetime(attribution_agg["revenue_date"]) <= pd.to_datetime(end_date))
+                ]
+
+                if not filtered_attr.empty:
+                    partner_summary = filtered_attr.groupby(["partner_id", "partner_name"]).agg({
+                        "attributed_amount": "sum",
+                        "account_id": "nunique"
+                    }).reset_index()
+                    partner_summary.columns = ["partner_id", "partner_name", "attributed_amount", "accounts_influenced"]
+
+                    st.plotly_chart(
+                        create_partner_performance_bar_chart(partner_summary),
+                        width='stretch',
+                        key="sales_partner_performance"
+                    )
+
+        st.markdown("---")
+
+        # Top Movers Section
+        if comparison and previous_start and previous_end:
+            st.markdown("### 📈 Top Movers")
+
+            try:
+                movers = get_top_movers(
+                    st.session_state.ledger,
+                    st.session_state.partners,
+                    start_date,
+                    end_date,
+                    previous_start,
+                    previous_end
+                )
+
+                if movers:
+                    # Show top 10 in table
+                    movers_data = []
+                    for mover in movers[:10]:
+                        movers_data.append({
+                            "Partner": mover.partner_name,
+                            "Current": format_currency_compact(mover.current_revenue),
+                            "Previous": format_currency_compact(mover.previous_revenue),
+                            "Change": f"{mover.trend_indicator} {format_growth_percentage(mover.change_percentage / 100)}"
+                        })
+
+                    st.dataframe(
+                        pd.DataFrame(movers_data),
+                        width='stretch',
+                        hide_index=True
+                    )
+
+                    # Also show chart
+                    st.plotly_chart(
+                        create_top_movers_chart(movers, limit=8),
+                        width='stretch',
+                        key="sales_top_movers_chart"
+                    )
+                else:
+                    st.info("No partner activity changes to display")
+            except Exception as e:
+                st.warning(f"Unable to calculate top movers: {str(e)}")
+
+    else:
+        st.info("📊 **No data loaded yet.**\n\nGo to the **Data Import** tab to load demo data or upload your own data.")
+
+
+# ============================================================================
+# TAB 2: PARTNER MANAGEMENT DASHBOARD (NEW)
+# ============================================================================
+
+with tabs[2]:
+    col_title, col_export = st.columns([4, 1])
+
+    with col_title:
+        st.title("🤝 Partner Management Dashboard")
+        st.caption("Comprehensive partner health, engagement metrics, and relationship insights for partner account managers")
+
+    with col_export:
+        st.markdown("") # Spacing
+        if st.button("📥 Export CSV", key="mgmt_export", width='stretch'):
+            filtered_ledger = apply_global_filters(st.session_state.ledger)
+            csv_data = export_ledger_to_csv(filtered_ledger)
+            st.download_button(
+                "Download Data",
+                csv_data,
+                "partner_management_dashboard.csv",
+                "text/csv",
+                key="mgmt_download"
+            )
+
+    st.markdown("---")
+
+    if not st.session_state.partners:
+        st.info("📊 **No partners loaded yet.**\n\nGo to the **Data Import** tab to load demo data or upload your own data.")
+    else:
+        # Partner Selector
+        col1, col2 = st.columns([3, 1])
+
+        with col1:
+            # Create partner options sorted by recent revenue
+            partner_revenue = {}
+            for entry in st.session_state.ledger:
+                partner_revenue[entry.partner_id] = partner_revenue.get(entry.partner_id, 0) + entry.attributed_value
+
+            sorted_partners = sorted(
+                st.session_state.partners.items(),
+                key=lambda x: partner_revenue.get(x[0], 0),
+                reverse=True
+            )
+
+            selected_partner_id = st.selectbox(
+                "Select Partner",
+                options=[p[0] for p in sorted_partners],
+                format_func=lambda pid: f"{st.session_state.partners[pid]} ({pid})",
+                key="mgmt_partner_selector"
+            )
+
+            selected_partner_name = st.session_state.partners[selected_partner_id]
+
+        with col2:
+            # Show partner since date (first touchpoint)
+            partner_tps = [tp for tp in st.session_state.touchpoints if tp.partner_id == selected_partner_id]
+            if partner_tps:
+                first_tp = min([tp for tp in partner_tps if tp.timestamp], key=lambda tp: tp.timestamp, default=None)
+                if first_tp:
+                    st.metric("Partner Since", first_tp.timestamp.strftime("%b %Y"))
+
+        st.markdown("---")
+
+        # Calculate Health Score
+        try:
+            health_score = calculate_health_score(
+                selected_partner_id,
+                st.session_state.ledger,
+                st.session_state.touchpoints,
+                st.session_state.targets,
+                lookback_days=90
+            )
+
+            # Health Score Card
+            st.markdown("### Partner Health")
+
+            health_col1, health_col2 = st.columns([1, 2])
+
+            with health_col1:
+                # Large health gauge
+                fig = create_health_gauge(health_score.total_score, title="Health Score")
+                st.plotly_chart(fig, width='stretch', key="mgmt_health_gauge")
+
+            with health_col2:
+                # Health details card
+                health_emoji = get_health_emoji(health_score.total_score)
+                grade_desc = get_grade_description(health_score.grade)
+
+                st.markdown(f"""
+                <div style="background: rgba(255,255,255,0.75); border: 1px solid #e2e8f0; border-radius: 14px; padding: 1.5rem;">
+                    <h3>{health_emoji} {selected_partner_name}</h3>
+                    <p style="font-size: 1.2em;"><b>Grade: {health_score.grade}</b> ({grade_desc})</p>
+                    <p>Trend: {health_score.trend}</p>
+                </div>
+                """, unsafe_allow_html=True)
+
+                # Calculate metrics for insights
+                partner_ledger = [e for e in st.session_state.ledger if e.partner_id == selected_partner_id]
+
+                cutoff_30d = datetime.now() - timedelta(days=30)
+                recent_ledger = [e for e in partner_ledger if e.calculation_timestamp >= cutoff_30d]
+                prev_30d_start = datetime.now() - timedelta(days=60)
+                prev_30d_end = datetime.now() - timedelta(days=30)
+                prev_ledger = [e for e in partner_ledger
+                              if prev_30d_start <= e.calculation_timestamp < prev_30d_end]
+
+                recent_revenue = sum(e.attributed_value for e in recent_ledger)
+                prev_revenue = sum(e.attributed_value for e in prev_ledger)
+                revenue_growth = ((recent_revenue - prev_revenue) / prev_revenue) if prev_revenue > 0 else 0
+
+                win_rate = calculate_win_rate(
+                    selected_partner_id,
+                    st.session_state.targets,
+                    st.session_state.touchpoints
+                )
+
+                avg_deal = sum(e.attributed_value for e in partner_ledger) / len(partner_ledger) if partner_ledger else 0
+
+                deal_velocity = calculate_deal_velocity(
+                    selected_partner_id,
+                    st.session_state.targets,
+                    st.session_state.touchpoints
+                )
+
+                metrics_dict = {
+                    "revenue_growth": revenue_growth * 100,
+                    "win_rate": win_rate,
+                    "avg_deal_size": avg_deal,
+                    "deal_velocity": deal_velocity
+                }
+
+                insights = generate_partner_insights(selected_partner_id, health_score, metrics_dict)
+
+                # Strengths
+                if insights.strengths:
+                    st.markdown("**✅ Strengths:**")
+                    for strength in insights.strengths[:3]:
+                        st.markdown(f"• {strength}")
+
+                # Improvements
+                if insights.improvements:
+                    st.markdown("**⚠️ Areas to Improve:**")
+                    for improvement in insights.improvements[:2]:
+                        st.markdown(f"• {improvement}")
+
+                # Recommendations
+                if insights.recommendations:
+                    st.markdown("**💡 Recommendations:**")
+                    for rec in insights.recommendations[:2]:
+                        st.markdown(f"• {rec}")
+
+        except Exception as e:
+            st.error(f"Error calculating health score: {str(e)}")
+            health_score = None
+
+        st.markdown("---")
+
+        # Key Metrics Row
+        st.markdown("### Key Metrics")
+        metric_cols = st.columns(5)
+
+        partner_ledger = [e for e in st.session_state.ledger if e.partner_id == selected_partner_id]
+        total_attributed = sum(e.attributed_value for e in partner_ledger)
+        deal_count = len(set(e.target_id for e in partner_ledger))
+        avg_deal_size = total_attributed / deal_count if deal_count > 0 else 0
+
+        win_rate_calc = calculate_win_rate(
+            selected_partner_id,
+            st.session_state.targets,
+            st.session_state.touchpoints
         )
+
+        with metric_cols[0]:
+            st.metric("Total Attributed", format_currency_compact(total_attributed))
+
+        with metric_cols[1]:
+            st.metric("Deals Influenced", str(deal_count))
+
+        with metric_cols[2]:
+            st.metric("Avg Deal Size", format_currency_compact(avg_deal_size))
+
+        with metric_cols[3]:
+            if win_rate_calc is not None:
+                st.metric("Win Rate", f"{win_rate_calc:.0%}")
+            else:
+                st.metric("Win Rate", "N/A", help="No stage data available")
+
+        with metric_cols[4]:
+            partner_tps_recent = [tp for tp in st.session_state.touchpoints
+                                 if tp.partner_id == selected_partner_id and tp.timestamp]
+            if partner_tps_recent:
+                last_tp = max(partner_tps_recent, key=lambda tp: tp.timestamp)
+                st.metric("Last Activity", format_days_ago(last_tp.timestamp))
+            else:
+                st.metric("Last Activity", "N/A")
+
+        st.markdown("---")
+
+        # Performance Trends
+        st.markdown("### Performance Trends")
+        trend_col1, trend_col2 = st.columns(2)
+
+        with trend_col1:
+            # Revenue trend (12 months)
+            try:
+                # Calculate monthly revenue for this partner
+                monthly_data = {}
+                for entry in partner_ledger:
+                    month_key = entry.calculation_timestamp.strftime("%Y-%m")
+                    monthly_data[month_key] = monthly_data.get(month_key, 0) + entry.attributed_value
+
+                if monthly_data:
+                    # Get last 12 months
+                    months = sorted(monthly_data.keys())[-12:]
+                    trend_df = pd.DataFrame({
+                        'month': months,
+                        'revenue': [monthly_data[m] for m in months]
+                    })
+
+                    fig = create_partner_revenue_trend(selected_partner_name, trend_df)
+                    st.plotly_chart(fig, width='stretch', key="mgmt_revenue_trend")
+                else:
+                    st.info("No revenue history available")
+            except Exception as e:
+                st.warning(f"Unable to create revenue trend: {str(e)}")
+
+        with trend_col2:
+            # Activity trend
+            try:
+                # Calculate monthly touchpoints
+                monthly_tps = {}
+                for tp in partner_tps_recent:
+                    if tp.timestamp:
+                        month_key = tp.timestamp.strftime("%Y-%m")
+                        monthly_tps[month_key] = monthly_tps.get(month_key, 0) + 1
+
+                if monthly_tps:
+                    months = sorted(monthly_tps.keys())[-12:]
+                    activity_df = pd.DataFrame({
+                        'month': months,
+                        'touchpoints': [monthly_tps[m] for m in months]
+                    })
+
+                    fig = create_partner_activity_trend(selected_partner_name, activity_df)
+                    st.plotly_chart(fig, width='stretch', key="mgmt_activity_trend")
+                else:
+                    st.info("No activity history available")
+            except Exception as e:
+                st.warning(f"Unable to create activity trend: {str(e)}")
+
+        st.markdown("---")
+
+        # Recent Deals Table
+        st.markdown("### Recent Deals (Last 10)")
+
+        partner_target_ids = {tp.target_id for tp in st.session_state.touchpoints
+                              if tp.partner_id == selected_partner_id}
+
+        recent_deals = []
+        for target in st.session_state.targets:
+            if target.id in partner_target_ids:
+                # Get this partner's ledger entry for this target
+                entry = next((e for e in partner_ledger if e.target_id == target.id), None)
+
+                if entry:
+                    # Get role from touchpoint
+                    tp = next((t for t in st.session_state.touchpoints
+                             if t.target_id == target.id and t.partner_id == selected_partner_id), None)
+
+                    recent_deals.append({
+                        "Deal ID": target.external_id,
+                        "Account": target.metadata.get("account_name", "Unknown"),
+                        "Close Date": target.timestamp.strftime("%Y-%m-%d"),
+                        "Value": format_currency_compact(target.value),
+                        "Role": tp.role if tp else "N/A",
+                        "Attribution": f"{entry.split_percentage:.0%}",
+                        "Attributed $": format_currency_compact(entry.attributed_value)
+                    })
+
+        if recent_deals:
+            # Sort by close date descending
+            recent_deals_sorted = sorted(recent_deals, key=lambda d: d["Close Date"], reverse=True)[:10]
+            st.dataframe(
+                pd.DataFrame(recent_deals_sorted),
+                width='stretch',
+                hide_index=True
+            )
+        else:
+            st.info("No deals found for this partner")
+
+
+# ============================================================================
+# TAB 4: APPROVAL QUEUE
+# ============================================================================
+
+with tabs[4]:
+    # Check if user has permission to approve touchpoints
+    if not can_user_approve_touchpoints():
+        st.error("🔒 Access Denied")
+        st.warning("You need Partner Ops, Manager, or Admin role to access the approval queue.")
+        st.info(f"Your current role: {st.session_state.current_user.role.value}")
+        st.stop()
+
+    # Sub-tabs for approval workflow
+    approval_tabs = st.tabs(["📋 Pending Approvals", "📜 Approval History", "📊 Statistics"])
+
+    with approval_tabs[0]:
+        render_approval_queue(st.session_state.session_manager, st.session_state.current_user)
+
+    with approval_tabs[1]:
+        render_approval_history(st.session_state.session_manager)
+
+    with approval_tabs[2]:
+        render_approval_stats(st.session_state.session_manager)
+
+
+# ============================================================================
+# TAB 5: DATA IMPORT
+# ============================================================================
+
+with tabs[5]:
+    st.title("📥 Data Import")
+    st.caption("Upload CSV data with automatic schema detection")
+
+    # ========================================
+    # DEMO DATA PLAYGROUND
+    # ========================================
+    st.markdown("### 🎲 Quick Start - Load Demo Data")
+
+    demo_col1, demo_col2 = st.columns([2, 1])
+
+    with demo_col1:
+        st.info("""
+**Never demo an empty app!** Load realistic SaaS B2B sample data:
+- 10 opportunities ($10K-$2M range)
+- 25 partner touchpoints (7 partners across SI, Influence, Referral, ISV roles)
+- 3 pre-configured attribution rules
+- Pre-calculated ledger entries
+
+Perfect for exploring features and presenting to stakeholders.
+        """)
+
+    with demo_col2:
+        if st.button("🚀 Load Demo Data", type="primary", width='stretch'):
+            with st.spinner("Generating demo dataset..."):
+                # Generate demo data
+                demo_targets, demo_touchpoints, demo_rules, demo_ledger = generate_complete_demo_data()
+
+                # Clear existing data
+                st.session_state.targets = demo_targets
+                st.session_state.touchpoints = demo_touchpoints
+                st.session_state.rules = demo_rules
+                st.session_state.ledger = demo_ledger
+
+                # Update partners dictionary
+                st.session_state.partners = DEMO_PARTNER_NAMES.copy()
+
+                # Get summary
+                summary = get_demo_data_summary(demo_targets, demo_touchpoints, demo_rules, demo_ledger)
+
+                st.success("✅ **Demo Data Loaded!**")
+                st.markdown(f"""
+**Dataset Summary:**
+- 📊 {summary['num_targets']} opportunities
+- 🤝 {summary['num_touchpoints']} partner touchpoints
+- ⚙️ {summary['num_rules']} attribution rules
+- 📝 {summary['num_ledger_entries']} ledger entries
+
+**💰 Revenue:** ${summary['total_revenue']:,.2f} total, ${summary['total_attributed']:,.2f} attributed ({summary['attribution_accuracy']:.1f}% coverage)
+
+**📅 Date Range:** {summary['date_range'][0]} to {summary['date_range'][1]}
+
+**🏆 Top 3 Partners:**
+                """)
+                for idx, (partner_name, revenue) in enumerate(summary['top_partners'][:3], 1):
+                    st.markdown(f"{idx}. **{partner_name}**: ${revenue:,.2f}")
+
+                st.info("👉 Go to the **Dashboard** tab to see visualizations or **Ledger Explorer** to see attribution results!")
+
+    st.markdown("---")
+    st.markdown("### 📂 Or Import Your Own Data")
+
+    import_tabs = st.tabs(["Upload CSV", "Download Templates", "Manual Entry"])
+
+    # Upload CSV sub-tab
+    with import_tabs[0]:
+        st.markdown("### Upload CSV File")
+        st.info("""
+**Supported formats:**
+- Salesforce Opportunity exports
+- HubSpot Deal exports
+- Custom CSV with opportunity/partner data
+
+**Auto-detection:** We'll infer your schema automatically!
+        """)
 
         uploaded_file = st.file_uploader(
-            f"Upload {import_type.replace('_', ' ').title()} CSV",
+            "Choose a CSV file",
             type=["csv"],
-            key=f"upload_{import_type}"
+            help="Upload Salesforce/HubSpot export or custom CSV"
         )
 
-        if uploaded_file is not None:
-            st.info(f"File uploaded: {uploaded_file.name}")
+        if uploaded_file:
+            # Read and preview
+            csv_content = uploaded_file.read()
+            preview_df = pd.read_csv(pd.io.common.BytesIO(csv_content))
 
-            if st.button(f"Import {import_type.replace('_', ' ').title()}", type="primary"):
-                with st.spinner(f"Importing {import_type}..."):
-                    csv_content = uploaded_file.read()
+            st.markdown("#### Preview (First 5 Rows)")
+            st.dataframe(preview_df.head(), width='stretch')
 
-                    if import_type == "accounts":
-                        success, errors_count, error_msgs = import_accounts_from_csv(csv_content, db)
-                    elif import_type == "partners":
-                        success, errors_count, error_msgs = import_partners_from_csv(csv_content, db)
-                    elif import_type == "use_cases":
-                        success, errors_count, error_msgs = import_use_cases_from_csv(csv_content, db)
-                    elif import_type == "use_case_partners":
-                        success, errors_count, error_msgs = import_use_case_partners_from_csv(csv_content, db)
-                    else:
-                        success, errors_count, error_msgs = 0, 0, ["Unknown import type"]
+            # Ingest
+            if st.button("Import Data"):
+                with st.spinner("Ingesting data..."):
+                    result = ingest_csv(csv_content)
 
-                    if success > 0:
-                        st.success(f"Successfully imported {success} records!")
-                    if errors_count > 0:
-                        st.error(f"Failed to import {errors_count} records")
-                        with st.expander("View errors"):
-                            for msg in error_msgs[:20]:
-                                st.text(msg)
-                    if success == 0 and errors_count == 0:
-                        st.warning("No records were processed")
+                    st.success(f"✅ **Import Complete!**")
+                    st.markdown(f"""
+**Targets loaded:** {result['stats']['targets_loaded']}
+**Touchpoints loaded:** {result['stats']['touchpoints_loaded']}
+**Confidence:** {result['schema']['confidence']:.0%}
+                    """)
 
-    with bulk_tabs[1]:
-        st.markdown("### Export All Data")
-        st.caption("Download a complete backup of all data tables.")
+                    # Add to session state
+                    # Assign IDs to targets
+                    next_target_id = max([t.id for t in st.session_state.targets], default=0) + 1
+                    for idx, target in enumerate(result["targets"]):
+                        target.id = next_target_id + idx
+                        st.session_state.targets.append(target)
 
-        if st.button("Generate Full Export", type="primary"):
-            with st.spinner("Exporting all data..."):
-                all_data = export_all_data(db)
+                    # Update touchpoints with correct target IDs
+                    target_lookup = {t.external_id: t.id for t in result["targets"]}
+                    next_tp_id = max([tp.id for tp in st.session_state.touchpoints], default=0) + 1
 
-                if all_data:
-                    excel_data = export_to_excel(all_data)
-                    st.download_button(
-                        "Download Complete Data Export (Excel)",
-                        data=excel_data,
-                        file_name=f"attribution_full_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True
-                    )
-                    st.success(f"Export ready! Contains {len(all_data)} tables.")
+                    for idx, tp in enumerate(result["touchpoints"]):
+                        tp.id = next_tp_id + idx
+                        # Update target_id from temporary index to actual ID
+                        if tp.target_id < len(result["targets"]):
+                            external_id = result["targets"][tp.target_id].external_id
+                            tp.target_id = target_lookup[external_id]
+                        st.session_state.touchpoints.append(tp)
 
-    with bulk_tabs[2]:
-        st.markdown("### CSV Templates")
-        st.caption("Download template files for bulk imports.")
+                    # Extract partner IDs
+                    for tp in result["touchpoints"]:
+                        if tp.partner_id not in st.session_state.partners:
+                            st.session_state.partners[tp.partner_id] = tp.partner_id  # Use ID as name for now
 
-        template_cols = st.columns(2)
+                    # Show warnings
+                    if result["validation_errors"]:
+                        with st.expander("⚠️ Warnings & Validation Issues"):
+                            for error in result["validation_errors"]:
+                                st.warning(error)
+
+                    st.rerun()
+
+    # Download Templates sub-tab
+    with import_tabs[1]:
+        st.markdown("### Download CSV Templates")
+
+        template_cols = st.columns(3)
 
         with template_cols[0]:
+            st.markdown("**Salesforce Format**")
             st.download_button(
-                "Accounts Template",
-                data=get_import_template('accounts'),
-                file_name="accounts_template.csv",
+                "Download Salesforce Template",
+                data=generate_csv_template("salesforce"),
+                file_name="salesforce_template.csv",
                 mime="text/csv",
-                use_container_width=True
-            )
-            st.download_button(
-                "Use Cases Template",
-                data=get_import_template('use_cases'),
-                file_name="use_cases_template.csv",
-                mime="text/csv",
-                use_container_width=True
+                width='stretch'
             )
 
         with template_cols[1]:
+            st.markdown("**HubSpot Format**")
             st.download_button(
-                "Partners Template",
-                data=get_import_template('partners'),
-                file_name="partners_template.csv",
+                "Download HubSpot Template",
+                data=generate_csv_template("hubspot"),
+                file_name="hubspot_template.csv",
                 mime="text/csv",
-                use_container_width=True
-            )
-            st.download_button(
-                "Use Case Partners Template",
-                data=get_import_template('use_case_partners'),
-                file_name="use_case_partners_template.csv",
-                mime="text/csv",
-                use_container_width=True
+                width='stretch'
             )
 
-# --- Tab 2: Account Partner 360 ---
-with tabs[2]:
-    st.subheader("Catalog & links")
-    st.caption("Accounts, use cases, and partner links in one place. Imported CRM links will appear here.")
-    tag_source_setting = get_setting("use_case_tag_source", "hybrid")
-    if tag_source_setting == "crm":
-        st.info("Use case tags come from your CRM. Update stage/value in the CRM; this view stays read-only for tags.")
-    elif tag_source_setting == "app":
-        st.info("Tagging happens here. Use this table to manage stages/values; CRM tags are ignored.")
-    else:
-        st.info("Hybrid mode: accept CRM-provided tags and allow in-app updates where needed.")
-    filter_cols = st.columns(3)
-    with filter_cols[0]:
-        account_filter = st.selectbox("Filter by account", ["All"] + [f"{row['account_name']} ({row['account_id']})" for _, row in accounts.iterrows()])
-    with filter_cols[1]:
-        stage_filter = st.selectbox("Filter by stage", ["All", "Discovery", "Evaluation", "Commit", "Live"])
-    with filter_cols[2]:
-        partner_filter = st.selectbox("Filter by partner", ["All"] + [row["partner_name"] for _, row in read_sql("SELECT partner_name FROM partners ORDER BY partner_name;").iterrows()])
+        with template_cols[2]:
+            st.markdown("**Minimal Format**")
+            st.download_button(
+                "Download Minimal Template",
+                data=generate_csv_template("minimal"),
+                file_name="minimal_template.csv",
+                mime="text/csv",
+                width='stretch'
+            )
 
-    use_cases = read_sql("""
-        SELECT u.use_case_id, u.use_case_name, u.stage, u.estimated_value, u.target_close_date, u.tag_source, a.account_name, a.account_id
-        FROM use_cases u
-        JOIN accounts a ON a.account_id = u.account_id
-        ORDER BY a.account_name, u.use_case_name;
-    """)
-    st.caption("Auto-assign mode is ON. Splits and roles come from AI/heuristics.")
-    if account_filter != "All":
-        sel_id = account_filter.split("(")[-1].rstrip(")")
-        use_cases = use_cases[use_cases["account_id"] == sel_id]
-    if stage_filter != "All":
-        use_cases = use_cases[use_cases["stage"].str.lower() == stage_filter.lower()]
-    st.markdown("**Filtered totals**")
-    # Apply filters to metrics within this tab and update top-level placeholders
-    filtered_accounts = accounts_df
-    filtered_partners = partners_df
-    filtered_aps = ap_df
-    if account_filter != "All":
-        filtered_accounts = filtered_accounts[filtered_accounts["account_id"] == sel_id]
-        filtered_aps = filtered_aps[filtered_aps["account_id"] == sel_id]
-        filtered_use_cases = use_cases_df[use_cases_df["account_id"] == sel_id]
-    else:
-        filtered_use_cases = use_cases_df
-    if partner_filter != "All":
-        partner_ids = partners_df[partners_df["partner_name"] == partner_filter]["partner_id"]
-        filtered_partners = partners_df[partners_df["partner_name"] == partner_filter]
-        filtered_aps = filtered_aps[filtered_aps["partner_id"].isin(partner_ids)]
-    if stage_filter != "All":
-        uc_filtered_stage = read_sql("""
-            SELECT use_case_id, account_id
-            FROM use_cases
-            WHERE LOWER(stage) = ?;
-        """, (stage_filter.lower(),))
-        filtered_use_cases = filtered_use_cases.merge(uc_filtered_stage, on=["use_case_id", "account_id"], how="inner")
-        filtered_aps = filtered_aps[filtered_aps["account_id"].isin(filtered_use_cases["account_id"])]
+    # Manual Entry sub-tab
+    with import_tabs[2]:
+        st.markdown("### Manual Data Entry")
+        st.info("Quick way to add a single target + touchpoint for testing")
 
-    metrics_row = st.columns(4)
-    metrics_row[0].metric("Accounts", f"{len(filtered_accounts)}")
-    metrics_row[1].metric("Partners", f"{len(filtered_partners)}")
-    metrics_row[2].metric("Use cases", f"{len(filtered_use_cases)}")
-    metrics_row[3].metric("AccountPartner links", f"{len(filtered_aps)}")
+        with st.form("manual_entry"):
+            col1, col2 = st.columns(2)
 
-    st.markdown("**Use cases**")
-    if use_cases.empty:
-        st.info("No use cases available. Add them to the database to enable attribution.")
-    else:
-        display_uc = use_cases.rename(columns={"use_case_name": "Use case", "stage": "Stage", "estimated_value": "Est. value", "target_close_date": "Target close", "account_name": "Account", "tag_source": "Tag source"})
-        st.dataframe(display_uc, use_container_width=True)
+            with col1:
+                st.markdown("**Target (Opportunity)**")
+                target_id = st.text_input("External ID", value=f"T{len(st.session_state.targets)+1}")
+                target_value = st.number_input("Value ($)", min_value=0.0, value=100000.0)
+                target_date = st.date_input("Close Date", value=date.today())
 
-    st.markdown("---")
-    st.subheader("Link partner to use case (auto-rollup to AccountPartner)")
-    if tag_source_setting == "crm":
-        st.warning("Use case attributes (stage/value) are sourced from CRM. Update them there; linking here will still respect CRM tags.")
-    elif tag_source_setting == "app":
-        st.caption("Use case tags live here. Adjust them in-app as needed.")
-    else:
-        st.caption("Hybrid tagging: we keep the tag_source on each use case to show whether it came from CRM or in-app edits.")
-    partners = read_sql("SELECT partner_id, partner_name FROM partners ORDER BY partner_name;")
+            with col2:
+                st.markdown("**Partner Touchpoint**")
+                partner_id = st.text_input("Partner ID", value=f"P{len(st.session_state.partners)+1:03d}")
+                partner_name = st.text_input("Partner Name", value="New Partner")
+                partner_role = st.selectbox("Role", DEFAULT_PARTNER_ROLES)
 
-    if use_cases.empty or partners.empty:
-        st.info("Need at least one use case and partner to create a UseCasePartner.")
-    else:
-        si_auto_mode = get_setting("si_auto_split_mode", "live_share")
-        inf_default = float(get_setting("default_split_influence", "10"))
-        ref_default = float(get_setting("default_split_referral", "15"))
-        isv_default = float(get_setting("default_split_isv", "10"))
-        uc_label_map = {
-            f"{row['account_name']} — {row['use_case_name']} [{(row['stage'] or 'Stage n/a') if pd.notnull(row['stage']) else 'Stage n/a'}] (${(row['estimated_value'] or 0):,.0f})": row["use_case_id"]
-            for _, row in use_cases.iterrows()
-        }
-        p_label_map = {
-            f"{row['partner_name']} ({row['partner_id']})": row["partner_id"]
-            for _, row in partners.iterrows()
+            if st.form_submit_button("Add Entry"):
+                # Create target
+                new_target = AttributionTarget(
+                    id=len(st.session_state.targets) + 1,
+                    type=TargetType.OPPORTUNITY,
+                    external_id=target_id,
+                    value=target_value,
+                    timestamp=datetime.combine(target_date, datetime.min.time()),
+                    metadata={"source": "manual_entry"}
+                )
+                st.session_state.targets.append(new_target)
+
+                # Create touchpoint
+                new_touchpoint = PartnerTouchpoint(
+                    id=len(st.session_state.touchpoints) + 1,
+                    partner_id=partner_id,
+                    target_id=new_target.id,
+                    touchpoint_type=TouchpointType.MANUAL_OVERRIDE,
+                    role=partner_role,
+                    timestamp=datetime.combine(target_date, datetime.min.time())
+                )
+                st.session_state.touchpoints.append(new_touchpoint)
+
+                # Add partner
+                if partner_id not in st.session_state.partners:
+                    st.session_state.partners[partner_id] = partner_name
+
+                st.success(f"✅ Added target {target_id} with partner {partner_name}")
+                st.rerun()
+
+
+# ============================================================================
+# TAB 6: SALESFORCE INTEGRATION
+# ============================================================================
+
+with tabs[6]:
+    st.title("🔗 Salesforce Integration")
+    st.caption("Connect your Salesforce org and configure data sync")
+
+    # Initialize session state
+    if "salesforce_connected" not in st.session_state:
+        st.session_state.salesforce_connected = False
+
+    if "salesforce_config" not in st.session_state:
+        st.session_state.salesforce_config = {
+            "segment_mode": None,
+            "partner_field": "Partner__c",
+            "role_field": None,
+            "deal_reg_object": "Deal_Registration__c"
         }
 
-        uc_choice = st.selectbox("Use case", list(uc_label_map.keys()))
-        p_choice = st.selectbox("Partner", list(p_label_map.keys()))
-        role_context = st.text_area("Describe partner involvement (optional, used by AI)", height=80)
+    # Step 1: Connect Salesforce
+    if not st.session_state.salesforce_connected:
+        st.markdown("### Step 1: Connect Salesforce")
 
-        selected_uc = uc_label_map[uc_choice]
-        uc_row = use_cases[use_cases["use_case_id"] == selected_uc].iloc[0]
-        uc_value = float(uc_row["estimated_value"] or 0)
-        account_live_total = use_cases[
-            (use_cases["account_id"] == uc_row["account_id"])
-            & (use_cases["stage"].str.lower() == "live")
-            & use_cases["estimated_value"].notnull()
-        ]["estimated_value"].sum()
-        account_all_total = use_cases[
-            (use_cases["account_id"] == uc_row["account_id"])
-            & use_cases["estimated_value"].notnull()
-        ]["estimated_value"].sum()
-        base_total = account_live_total if account_live_total > 0 else account_all_total
+        st.info("""
+        **Before connecting:**
+        1. Create a Connected App in Salesforce
+        2. Set OAuth redirect URI to: `http://localhost:8503/oauth/callback`
+        3. Enable scopes: `api`, `refresh_token`
+        4. Add your IP to the trusted IP ranges
+        """)
 
-        if st.button("Save use case ↔ partner (auto rollup)"):
-            role_choice, role_err = infer_partner_role(
-                account_name=uc_row["account_name"],
-                use_case_name=uc_row["use_case_name"],
-                partner_name=p_choice,
-                context=role_context,
+        # OAuth configuration
+        with st.form("salesforce_oauth"):
+            client_id = st.text_input(
+                "Consumer Key",
+                placeholder="Paste your Connected App Consumer Key",
+                help="Found in your Salesforce Connected App settings"
             )
-            st.info(f"Inferred partner role: {role_choice}")
-            if role_err:
-                st.caption(f"LLM note: {role_err}")
-            # Auto-calculation rule for Implementation partners: allocate split based on use case's share of live or total value.
-            if role_choice == "Implementation (SI)":
-                auto_split, auto_reason = compute_si_auto_split(uc_value, account_live_total, account_all_total, si_auto_mode)
-                if auto_split is not None:
-                    source_label = "live total" if account_live_total > 0 else "total estimated (no live use cases)"
-                    st.info(
-                        f"Auto split for SI: use case value {uc_value:,.0f} / {source_label} {base_total:,.0f} "
-                        f"= {auto_split*100:.0f}% ({auto_reason})"
+
+            client_secret = st.text_input(
+                "Consumer Secret",
+                type="password",
+                placeholder="Paste your Connected App Consumer Secret"
+            )
+
+            is_sandbox = st.checkbox("Connect to Sandbox", value=False)
+
+            submit = st.form_submit_button("🔐 Connect Salesforce", type="primary", width='stretch')
+
+            if submit:
+                if client_id and client_secret:
+                    # Generate OAuth URL
+                    import secrets
+                    state = secrets.token_urlsafe(16)
+                    base_url = "https://test.salesforce.com" if is_sandbox else "https://login.salesforce.com"
+
+                    oauth_url = (
+                        f"{base_url}/services/oauth2/authorize?"
+                        f"response_type=code&"
+                        f"client_id={client_id}&"
+                        f"redirect_uri=http://localhost:8503/oauth/callback&"
+                        f"state={state}"
                     )
-                    split = auto_split
+
+                    st.success("✅ OAuth URL generated!")
+                    st.markdown(f"**[Click here to authorize →]({oauth_url})**")
+
+                    st.info("After authorizing, paste the authorization code below:")
+
+                    # TODO: Handle OAuth callback
+                    # For now, mock successful connection
+                    if st.button("Simulate Successful Connection (Demo)", type="secondary"):
+                        st.session_state.salesforce_connected = True
+                        st.session_state.salesforce_instance_url = "https://yourinstance.salesforce.com"
+                        st.rerun()
+
                 else:
-                    fallback = float(get_setting("si_fixed_percent", "20")) / 100.0
-                    st.warning(f"Auto split not available for this SI rule/data. Applying fallback {fallback*100:.0f}% (change in Admin settings).")
-                    split = fallback
-            else:
-                default_map = {
-                    "Influence": inf_default,
-                    "Referral": ref_default,
-                    "ISV": isv_default,
-                }
-                split = default_map.get(role_choice, 10) / 100.0
-                st.info(f"Auto-assigned {split*100:.0f}% based on role defaults.")
-            if get_setting_bool("enable_use_case_rules", True):
-                uc_allowed, uc_msg, _, uc_rule_idx, uc_rule_name = evaluate_rules({
-                    "partner_role": role_choice,
-                    "stage": str(uc_row["stage"]) if pd.notnull(uc_row["stage"]) else None,
-                    "estimated_value": uc_value,
-                }, key="use_case_rules")
-            else:
-                uc_allowed, uc_msg, uc_rule_idx, uc_rule_name = True, "Use-case rules disabled", None, None
-            if not uc_allowed:
-                st.error(f"Use case rule blocked: {uc_msg}")
-            else:
-                uc_link = " [View rule](#rule-builder)" if uc_rule_idx is not None else ""
-                st.info(f"Use case allowed: {uc_msg}{uc_link}")
-                # Always save the use case ↔ partner link
-                today = date.today().isoformat()
-                run_sql("""
-                INSERT INTO use_case_partners(use_case_id, partner_id, partner_role, created_at)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(use_case_id, partner_id)
-                DO UPDATE SET partner_role = excluded.partner_role;
-                """, (uc_label_map[uc_choice], p_label_map[p_choice], role_choice, today))
-                if get_setting_bool("enable_account_rollup", True):
-                    acct_allowed, acct_msg, _, acct_rule_idx, acct_rule_name = evaluate_rules({
-                        "partner_role": role_choice,
-                        "stage": str(uc_row["stage"]) if pd.notnull(uc_row["stage"]) else None,
-                        "estimated_value": uc_value,
-                    }, key="account_rules")
-                    if not acct_allowed:
-                        st.error(f"Account split blocked: {acct_msg}")
-                    else:
-                        acct_link = " [View rule](#rule-builder)" if acct_rule_idx is not None else ""
-                        st.info(f"Account rules passed: {acct_msg}{acct_link}")
-                        result = upsert_account_partner_from_use_case_partner(
-                            use_case_id=uc_label_map[uc_choice],
-                            partner_id=p_label_map[p_choice],
-                            partner_role=role_choice,
-                            split_percent=split
-                        )
-                        if result["status"] == "skipped_manual":
-                            st.warning("UseCasePartner saved, but AccountPartner already set to manual and was left untouched.")
-                        elif result["status"] == "blocked_split_cap":
-                            st.error(f"Blocked: total account split would be {result['total_with_new']*100:.0f}%, which exceeds the 100% cap. Toggle off enforcement in Settings if you want to allow this.")
-                        else:
-                            st.success(f"Saved. UseCasePartner created/updated AND AccountPartner auto-upserted at {split*100:.0f}% split.")
-                else:
-                    st.success("UseCasePartner saved. Account rollup skipped (rollup disabled).")
+                    st.error("Please provide both Consumer Key and Consumer Secret")
 
-    links = read_sql("""
-        SELECT
-            a.account_name,
-            u.use_case_name,
-            u.stage,
-            p.partner_name,
-            ucp.partner_role,
-            ucp.created_at
-        FROM use_case_partners ucp
-        JOIN use_cases u ON u.use_case_id = ucp.use_case_id
-        JOIN accounts a ON a.account_id = u.account_id
-        JOIN partners p ON p.partner_id = ucp.partner_id
-        ORDER BY a.account_name, u.use_case_name, p.partner_name;
-    """)
-    if account_filter != "All":
-        links = links[links["account_name"].str.contains(account_filter.split(" (")[0])]
-    if stage_filter != "All":
-        links = links[links["stage"].str.lower() == stage_filter.lower()]
-    if partner_filter != "All":
-        links = links[links["partner_name"] == partner_filter]
-    if not links.empty:
-        st.caption("Use Case ↔ Partner links (auto rollup sources)")
-        st.dataframe(links, use_container_width=True)
-
-    st.markdown("---")
-    st.subheader("AccountPartner relationships (auto + manual)")
-    ap = read_sql("""
-      SELECT ap.account_id, a.account_name, ap.partner_id, p.partner_name, ap.split_percent, ap.first_seen, ap.last_seen, ap.source
-      FROM account_partners ap
-      JOIN accounts a ON a.account_id = ap.account_id
-      JOIN partners p ON p.partner_id = ap.partner_id
-      ORDER BY a.account_name, p.partner_name;
-    """)
-    if account_filter != "All":
-        ap = ap[ap["account_name"].str.contains(account_filter.split(" (")[0])]
-    if partner_filter != "All":
-        ap = ap[ap["partner_name"] == partner_filter]
-    # stage filter indirectly via use_cases joined to account partners
-    if stage_filter != "All":
-        uc_stage = read_sql("""
-            SELECT DISTINCT ap.account_id, ap.partner_id
-            FROM account_partners ap
-            JOIN use_cases u ON u.account_id = ap.account_id
-            WHERE LOWER(u.stage) = ?;
-        """, (stage_filter.lower(),))
-        key_pairs = set(zip(uc_stage["account_id"], uc_stage["partner_id"]))
-        ap = ap[[ (row["account_id"], row["partner_id"]) in key_pairs for _, row in ap.iterrows() ]]
-
-    if ap.empty:
-        st.info("No AccountPartner relationships yet. Auto-create from a UseCasePartner or add manually below.")
     else:
-        st.dataframe(ap, use_container_width=True)
+        # Connected!
+        st.success(f"✅ Connected to Salesforce: {st.session_state.salesforce_instance_url}")
 
-    st.subheader("Manual AccountPartner (override or add)")
-    partners = read_sql("SELECT partner_id, partner_name FROM partners ORDER BY partner_name;")  # ensure fresh
-    if accounts.empty or partners.empty:
-        st.info("Need accounts and partners to add a manual AccountPartner.")
-    else:
-        with st.form("manual_account_partner"):
-            acct_map_manual = {f"{row['account_name']} ({row['account_id']})": row["account_id"] for _, row in accounts.iterrows()}
-            partner_map_manual = {f"{row['partner_name']} ({row['partner_id']})": row["partner_id"] for _, row in partners.iterrows()}
-            ap_account_choice = st.selectbox("Customer account", list(acct_map_manual.keys()))
-            ap_partner_choice = st.selectbox("Partner", list(partner_map_manual.keys()))
-            ap_split = st.slider("Split %", 0, 100, 20) / 100.0
-            manual_submit = st.form_submit_button("Save manual AccountPartner (locks source=manual)")
+        if st.button("🔌 Disconnect", type="secondary"):
+            st.session_state.salesforce_connected = False
+            st.rerun()
 
-            if manual_submit:
-                result = upsert_manual_account_partner(
-                    account_id=acct_map_manual[ap_account_choice],
-                    partner_id=partner_map_manual[ap_partner_choice],
-                    split_percent=ap_split,
-                )
-                if result["status"] == "blocked_split_cap":
-                    st.error(f"Blocked: total account split would be {result['total_with_new']*100:.0f}%, which exceeds the 100% cap. Toggle off enforcement in Settings if you want to allow this.")
-                else:
-                    st.success("Manual AccountPartner saved (source=manual). Future auto rollups will not overwrite this row.")
-
-    st.markdown("---")
-    st.subheader("Partner leaderboard")
-    default_range = (date.today() - timedelta(days=60), date.today())
-    date_range = st.date_input("Date range for leaderboard", value=default_range)
-    if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
-        start_date, end_date = date_range
-    else:
-        start_date = default_range[0]
-        end_date = default_range[1]
-    start_str = start_date.isoformat()
-    end_str = end_date.isoformat()
-    partner_impact = read_sql("""
-      SELECT
-        p.partner_name,
-        p.partner_id,
-        COUNT(DISTINCT ae.account_id) AS accounts_influenced,
-        ROUND(SUM(ae.attributed_amount), 2) AS total_attributed_revenue,
-        COUNT(DISTINCT ae.revenue_date) AS active_days
-      FROM attribution_events ae
-      JOIN partners p ON p.partner_id = ae.actor_id
-      WHERE ae.revenue_date BETWEEN ? AND ?
-      GROUP BY p.partner_name, p.partner_id
-      ORDER BY total_attributed_revenue DESC;
-    """, (start_str, end_str))
-    if partner_filter != "All":
-        partner_impact = partner_impact[partner_impact["partner_name"] == partner_filter]
-    if partner_impact.empty:
-        st.info("No partner impact yet in this window. Link a partner to a use case or create a manual AccountPartner.")
-    else:
-        st.dataframe(partner_impact, use_container_width=True)
-        csv_data = partner_impact.to_csv(index=False)
-        st.download_button(
-            "Download leaderboard CSV",
-            data=csv_data,
-            file_name=f"partner_leaderboard_{start_str}_to_{end_str}.csv",
-            mime="text/csv",
-        )
-
-# --- Tab 3: Account Drilldown ---
-with tabs[3]:
-    st.subheader("Account drilldown (use cases + revenue)")
-    if accounts.empty:
-        st.info("No accounts available.")
-    else:
-        acct_map = {f"{row['account_name']} ({row['account_id']})": row["account_id"] for _, row in accounts.iterrows()}
-        acct_choice = st.selectbox("Account", list(acct_map.keys()), key="drilldown_account")
-        selected_account_id = acct_map[acct_choice]
-
-        st.caption("Review use cases, linked partners, and revenue for this account.")
-
-        acct_use_cases = read_sql("""
-            SELECT use_case_id, use_case_name, stage, estimated_value, target_close_date
-            FROM use_cases
-            WHERE account_id = ?
-            ORDER BY use_case_name;
-        """, (selected_account_id,))
-        st.markdown("**Use cases**")
-        if acct_use_cases.empty:
-            st.info("No use cases for this account.")
-        else:
-            st.dataframe(acct_use_cases, use_container_width=True)
-
-        acct_ap = read_sql("""
-          SELECT ap.partner_id, p.partner_name, ap.split_percent, ap.first_seen, ap.last_seen, ap.source
-          FROM account_partners ap
-          JOIN partners p ON p.partner_id = ap.partner_id
-          WHERE ap.account_id = ?
-          ORDER BY p.partner_name;
-        """, (selected_account_id,))
-        st.markdown("**AccountPartner links**")
-        if acct_ap.empty:
-            st.info("No partners linked to this account yet.")
-        else:
-            st.dataframe(acct_ap, use_container_width=True)
-
-        rev = read_sql("""
-          SELECT revenue_date, amount
-          FROM revenue_events
-          WHERE account_id = ?
-          AND revenue_date >= date('now', '-30 day')
-          ORDER BY revenue_date DESC;
-        """, (selected_account_id,))
-        total_rev = float(rev["amount"].sum()) if not rev.empty else 0.0
-
-        attr_by_partner = read_sql("""
-          SELECT
-            p.partner_name,
-            ROUND(SUM(ae.attributed_amount), 2) AS attributed_amount,
-            MAX(ae.split_percent) AS split_percent
-          FROM attribution_events ae
-          JOIN partners p ON p.partner_id = ae.actor_id
-          WHERE ae.account_id = ?
-            AND ae.revenue_date >= date('now', '-30 day')
-          GROUP BY p.partner_name
-          ORDER BY attributed_amount DESC;
-        """, (selected_account_id,))
-        total_attr = float(attr_by_partner["attributed_amount"].sum()) if not attr_by_partner.empty else 0.0
-
-        c1, c2 = st.columns(2)
-        c1.metric("30d Account Revenue", f"{total_rev:,.0f}")
-        c2.metric("30d Attributed Revenue", f"{total_attr:,.0f}")
-
-        st.markdown("**Attributed revenue by partner (30d)**")
-        if attr_by_partner.empty:
-            st.info("No partner-linked revenue in the last 30 days.")
-        else:
-            st.dataframe(attr_by_partner, use_container_width=True)
-
-        st.markdown("**Why this credit?**")
-        if st.button("Recompute explanations", key=f"recompute_exp_{selected_account_id}"):
-            res = recompute_explanations(selected_account_id)
-            st.success(f"Wrote {res['written']} explanations for {acct_choice}.")
-        exps = read_sql("""
-          SELECT partner_id, as_of_date, explanation_json
-          FROM attribution_explanations
-          WHERE account_id = ?
-          ORDER BY created_at DESC;
-        """, (selected_account_id,))
-        if exps.empty:
-            st.caption("No explanations yet. Click recompute to generate.")
-        else:
-            for _, row in exps.iterrows():
-                data = safe_json_loads(row["explanation_json"]) or {}
-                partner_name = read_sql("SELECT partner_name FROM partners WHERE partner_id = ?;", (row["partner_id"],))
-                partner_label = partner_name.loc[0, "partner_name"] if not partner_name.empty else row["partner_id"]
-                with st.expander(f"{partner_label} — as of {row['as_of_date']}"):
-                    st.write(f"Source: {data.get('source', 'n/a')} | Split: {data.get('split_percent', 0)*100:.0f}% | Reason: {data.get('split_reason')}")
-                    uc_links = data.get("use_case_links", [])
-                    if uc_links:
-                        st.caption("Use case links")
-                        st.table(pd.DataFrame(uc_links))
-                    rules = data.get("rule_decisions", {})
-                    st.caption(f"Account rules: {rules.get('account', {})}")
-                    st.caption(f"Use case rules: {rules.get('use_cases', [])}")
-
-        st.markdown("**Revenue events (30d)**")
-        if rev.empty:
-            st.info("No revenue events in the last 30 days.")
-        else:
-            st.dataframe(rev, use_container_width=True)
-
-        # Export Account Drilldown
         st.markdown("---")
-        st.markdown("**Export Account Data**")
-        export_drilldown_cols = st.columns(3)
 
-        with export_drilldown_cols[0]:
-            if not acct_use_cases.empty or not acct_ap.empty:
-                excel_data = export_to_excel({
-                    "Use Cases": acct_use_cases,
-                    "Partners": acct_ap,
-                    "Revenue": rev,
-                    "Attribution": attr_by_partner
+        # Step 2: Choose Segment Mode
+        st.markdown("### Step 2: Choose Your Setup")
+
+        segment_mode = st.radio(
+            "How do you track partners today?",
+            [
+                "📌 **Segment 1**: Partners already tagged in Salesforce field",
+                "🔍 **Segment 2**: Partners exist but not tagged (need inference)",
+                "🚀 **Segment 3**: No partner tracking yet (greenfield)"
+            ],
+            help="This determines which data we'll sync from Salesforce"
+        )
+
+        # Extract segment number
+        if "Segment 1" in segment_mode:
+            st.session_state.salesforce_config["segment_mode"] = "segment_1"
+        elif "Segment 2" in segment_mode:
+            st.session_state.salesforce_config["segment_mode"] = "segment_2"
+        else:
+            st.session_state.salesforce_config["segment_mode"] = "segment_3"
+
+        st.markdown("---")
+
+        # Step 3: Configure Field Mappings
+        st.markdown("### Step 3: Configure Field Mappings")
+
+        mode = st.session_state.salesforce_config.get("segment_mode")
+
+        if mode == "segment_1":
+            st.markdown("**Partner Field Configuration:**")
+
+            partner_field = st.text_input(
+                "Partner Field API Name",
+                value=st.session_state.salesforce_config["partner_field"],
+                placeholder="e.g., Partner__c, Reseller__c",
+                help="The field on Opportunity that contains the partner"
+            )
+
+            role_field = st.text_input(
+                "Partner Role Field (optional)",
+                value=st.session_state.salesforce_config.get("role_field", "") or "",
+                placeholder="e.g., Partner_Role__c",
+                help="Optional field that specifies the partner's role"
+            )
+
+            st.session_state.salesforce_config["partner_field"] = partner_field
+            st.session_state.salesforce_config["role_field"] = role_field if role_field else None
+
+            st.info(f"""
+            **We'll sync:**
+            - Opportunities where `{partner_field}` is populated
+            - Create attribution targets + touchpoints
+            - 100% confidence (partner field = definitive)
+            """)
+
+        elif mode == "segment_2":
+            st.markdown("**Multi-Source Configuration:**")
+
+            st.markdown("**1. Partner Field (if available):**")
+            has_partner_field = st.checkbox("I have a partner field (sometimes populated)", value=True)
+
+            if has_partner_field:
+                partner_field = st.text_input(
+                    "Partner Field API Name",
+                    value=st.session_state.salesforce_config["partner_field"],
+                    placeholder="e.g., Partner__c"
+                )
+                st.session_state.salesforce_config["partner_field"] = partner_field
+            else:
+                st.session_state.salesforce_config["partner_field"] = None
+
+            st.markdown("**2. Activity Tracking:**")
+            sync_activities = st.checkbox("Sync Tasks & Events", value=True)
+            sync_campaigns = st.checkbox("Sync Campaign Members", value=True)
+            sync_contact_roles = st.checkbox("Sync Opportunity Contact Roles", value=True)
+
+            st.session_state.salesforce_config["sync_activities"] = sync_activities
+            st.session_state.salesforce_config["sync_campaigns"] = sync_campaigns
+            st.session_state.salesforce_config["sync_contact_roles"] = sync_contact_roles
+
+            st.info("""
+            **We'll sync:**
+            - Partner field (when populated) = High confidence
+            - Activities, campaigns, contact roles = Inference engine
+            - Confidence scoring based on proximity + account match
+            """)
+
+        elif mode == "segment_3":
+            st.markdown("**Deal Registration Configuration:**")
+
+            deal_reg_object = st.text_input(
+                "Deal Registration Object API Name",
+                value=st.session_state.salesforce_config["deal_reg_object"],
+                placeholder="e.g., Deal_Registration__c",
+                help="Custom object where partners submit deal registrations"
+            )
+
+            st.session_state.salesforce_config["deal_reg_object"] = deal_reg_object
+
+            st.markdown("**Deal Registration Fields:**")
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.text_input("Partner Field", value="Partner__c", disabled=True, key="dr_partner_field")
+                st.text_input("Status Field", value="Status__c", disabled=True, key="dr_status_field")
+                st.text_input("Submitted Date", value="Submitted_Date__c", disabled=True, key="dr_submitted_date")
+
+            with col2:
+                st.text_input("Opportunity Field", value="Opportunity__c", disabled=True, key="dr_opp_field")
+                st.text_input("Approved By", value="Approved_By__c", disabled=True, key="dr_approved_by")
+                st.text_input("Approved Date", value="Approved_Date__c", disabled=True, key="dr_approved_date")
+
+            st.info("""
+            **We'll sync:**
+            - Deal registrations (approval workflow)
+            - Opportunities (for context)
+            - Expiry management (90-day default)
+            """)
+
+        st.markdown("---")
+
+        # Step 4: Run Initial Sync
+        st.markdown("### Step 4: Run Initial Sync")
+
+        col1, col2 = st.columns([2, 1])
+
+        with col1:
+            sync_period = st.selectbox(
+                "Sync data from:",
+                ["Last 7 days", "Last 30 days", "Last 90 days", "Last year", "All time"],
+                index=2
+            )
+
+        with col2:
+            st.markdown("")
+            st.markdown("")
+
+            if st.button("🚀 Start Sync", type="primary", width='stretch'):
+                with st.spinner("Syncing data from Salesforce..."):
+                    # TODO: Call salesforce_connector.py
+                    # For now, simulate sync
+                    import time
+                    time.sleep(2)
+
+                    st.success("✅ Sync completed!")
+                    st.balloons()
+
+                    # Mock sync results
+                    st.session_state.sync_results = {
+                        "targets": 145,
+                        "touchpoints": 432,
+                        "partners": 28
+                    }
+
+        # Show sync results
+        if "sync_results" in st.session_state:
+            st.markdown("---")
+            st.markdown("### Sync Results")
+
+            results = st.session_state.sync_results
+
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                st.metric("Opportunities Synced", f"{results['targets']:,}")
+
+            with col2:
+                st.metric("Touchpoints Created", f"{results['touchpoints']:,}")
+
+            with col3:
+                st.metric("Partners Identified", f"{results['partners']:,}")
+
+        st.markdown("---")
+
+        # Step 5: Ongoing Sync Schedule
+        st.markdown("### Step 5: Ongoing Sync")
+
+        sync_frequency = st.select_slider(
+            "Auto-sync frequency",
+            options=["Manual only", "Every hour", "Every 15 minutes", "Real-time (webhooks)"],
+            value="Every hour"
+        )
+
+        if sync_frequency != "Manual only":
+            st.info(f"✅ Auto-sync enabled: {sync_frequency}")
+        else:
+            st.warning("⚠️ Auto-sync disabled - you'll need to manually sync")
+
+        st.markdown("---")
+
+        # Partner Invitation
+        st.markdown("### 📨 Invite Partners to Portal")
+
+        with st.expander("Invite partners to view their attribution"):
+            st.markdown("""
+            Give your partners real-time visibility into their attributed revenue.
+
+            **They'll be able to:**
+            - View their ledger across all deals
+            - See split percentages and methodology
+            - Submit self-reported activities
+            - Export statements for their records
+            """)
+
+            if st.session_state.partners:
+                partner_to_invite = st.selectbox(
+                    "Select partner to invite",
+                    options=list(st.session_state.partners.keys()),
+                    format_func=lambda pid: f"{st.session_state.partners[pid]} ({pid})"
+                )
+
+                partner_email = st.text_input(
+                    "Partner email",
+                    placeholder="partner@company.com"
+                )
+
+                if st.button("📧 Send Invitation", type="primary"):
+                    if partner_email:
+                        # TODO: Generate invitation link and send email
+                        st.success(f"✅ Invitation sent to {partner_email}")
+
+                        # Show preview
+                        with st.expander("Email Preview"):
+                            st.markdown(f"""
+                            **Subject:** You've been invited to view your attributed revenue
+
+                            Hi {st.session_state.partners[partner_to_invite]},
+
+                            You've been invited to view your real-time attributed revenue!
+
+                            Click here to create your account: [Partner Portal]
+
+                            - View your ledger
+                            - Track performance
+                            - Submit activities
+
+                            Thanks!
+                            """)
+                    else:
+                        st.error("Please enter partner email")
+            else:
+                st.info("Load demo data or import data to invite partners")
+
+
+# ============================================================================
+# TAB 7: VISUAL RULE BUILDER (SIMPLIFIED UX)
+# ============================================================================
+
+with tabs[7]:
+    st.title("🎨 Build Your Attribution Rule")
+    st.caption("No coding required - just drag sliders and see results instantly")
+
+    # Quick start templates
+    st.markdown("### 🚀 Quick Start")
+    st.markdown("Pick a template or build from scratch:")
+
+    template_cols = st.columns(4)
+
+    template_selected = None
+    with template_cols[0]:
+        if st.button("⚡ Equal Split\n*All partners get equal credit*", width='stretch', key="tmpl_equal"):
+            template_selected = "equal"
+
+    with template_cols[1]:
+        if st.button("🎯 60/30/10 Split\n*SI 60%, Influence 30%, Referral 10%*", width='stretch', key="tmpl_603010"):
+            template_selected = "603010"
+
+    with template_cols[2]:
+        if st.button("🏆 Winner Takes All\n*First partner gets 100%*", width='stretch', key="tmpl_winner"):
+            template_selected = "winner"
+
+    with template_cols[3]:
+        if st.button("🔨 Custom\n*Build your own rule*", width='stretch', key="tmpl_custom"):
+            template_selected = "custom"
+
+    st.markdown("---")
+
+    # Initialize session state for rule builder
+    if "visual_builder" not in st.session_state:
+        st.session_state.visual_builder = {
+            "rule_name": "My Custom Rule",
+            "roles": ["Implementation (SI)", "Referral"],
+            "splits": {"Implementation (SI)": 70, "Referral": 30},
+            "applies_to_all": True,
+            "min_deal_size": 0
+        }
+
+    # Apply template if selected
+    if template_selected == "equal":
+        st.session_state.visual_builder["rule_name"] = "Equal Split"
+        st.session_state.visual_builder["splits"] = {
+            role: 100 // len(DEFAULT_PARTNER_ROLES)
+            for role in DEFAULT_PARTNER_ROLES[:3]
+        }
+        st.session_state.visual_builder["roles"] = DEFAULT_PARTNER_ROLES[:3]
+
+    elif template_selected == "603010":
+        st.session_state.visual_builder["rule_name"] = "60/30/10 Split"
+        st.session_state.visual_builder["splits"] = {
+            "Implementation (SI)": 60,
+            "Influence": 30,
+            "Referral": 10
+        }
+        st.session_state.visual_builder["roles"] = ["Implementation (SI)", "Influence", "Referral"]
+
+    elif template_selected == "winner":
+        st.session_state.visual_builder["rule_name"] = "Winner Takes All"
+        st.session_state.visual_builder["splits"] = {"First Touch": 100}
+        st.session_state.visual_builder["roles"] = ["First Touch"]
+
+    # Step 1: Which deals does this apply to?
+    st.markdown("### 1️⃣ Which deals should use this rule?")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        applies_to = st.radio(
+            "",
+            ["All deals", "Deals over a certain size", "Specific products"],
+            key="applies_to_radio",
+            horizontal=False
+        )
+
+        st.session_state.visual_builder["applies_to_all"] = (applies_to == "All deals")
+
+    with col2:
+        if applies_to == "Deals over a certain size":
+            min_size = st.slider(
+                "Minimum deal value",
+                min_value=0,
+                max_value=500000,
+                value=100000,
+                step=10000,
+                format="$%d",
+                key="min_deal_slider"
+            )
+            st.session_state.visual_builder["min_deal_size"] = min_size
+            st.info(f"This rule applies to deals worth **${min_size:,}** or more")
+        elif applies_to == "Specific products":
+            product_filter = st.text_input(
+                "Product/Service",
+                placeholder="e.g., Enterprise Plan, Professional Services",
+                key="product_filter"
+            )
+
+    st.markdown("---")
+
+    # Step 2: Build the split
+    st.markdown("### 2️⃣ How should we split credit among partners?")
+
+    # Role selection
+    st.markdown("**Select partner roles:**")
+    selected_roles = st.multiselect(
+        "",
+        options=DEFAULT_PARTNER_ROLES,
+        default=st.session_state.visual_builder.get("roles", ["Implementation (SI)", "Referral"]),
+        key="role_multiselect",
+        help="Choose which partner roles should get credit"
+    )
+
+    if len(selected_roles) == 0:
+        st.warning("⚠️ Please select at least one partner role")
+        st.stop()
+
+    st.session_state.visual_builder["roles"] = selected_roles
+
+    st.markdown("**Adjust credit split:**")
+
+    # Visual sliders for each role
+    splits = {}
+    total_allocated = 0
+
+    for role in selected_roles:
+        # Get previous value or default
+        default_value = st.session_state.visual_builder["splits"].get(role, 100 // len(selected_roles))
+
+        col1, col2 = st.columns([3, 1])
+
+        with col1:
+            split_pct = st.slider(
+                f"{role}",
+                min_value=0,
+                max_value=100,
+                value=int(default_value),
+                step=5,
+                key=f"split_{role}",
+                help=f"Percentage of deal value attributed to {role}"
+            )
+
+        with col2:
+            st.metric("Percentage", f"{split_pct}%", label_visibility="collapsed")
+
+        splits[role] = split_pct
+        total_allocated += split_pct
+
+    st.session_state.visual_builder["splits"] = splits
+
+    # Validation
+    st.markdown("---")
+
+    if total_allocated != 100:
+        st.error(f"❌ **Total is {total_allocated}%** (must equal 100%)")
+        st.markdown("Adjust the sliders above so they add up to 100%")
+    else:
+        st.success(f"✅ **Perfect!** Splits add up to 100%")
+
+    # Step 3: Live Preview
+    st.markdown("---")
+    st.markdown("### 3️⃣ Preview")
+
+    # Example deal preview
+    st.markdown("**Example: $100,000 Deal**")
+
+    preview_data = []
+    for role, pct in splits.items():
+        amount = 100000 * (pct / 100)
+        preview_data.append({
+            "Partner Role": role,
+            "Split": f"{pct}%",
+            "Amount": f"${amount:,.0f}"
+        })
+
+    # Show as a nice table
+    import pandas as pd
+    preview_df = pd.DataFrame(preview_data)
+    st.dataframe(preview_df, width='stretch', hide_index=True)
+
+    # Visual bar chart
+    import plotly.graph_objects as go
+
+    fig = go.Figure(data=[
+        go.Bar(
+            x=list(splits.values()),
+            y=list(splits.keys()),
+            orientation='h',
+            text=[f"{v}%" for v in splits.values()],
+            textposition='inside',
+            marker=dict(
+                color=['#3b82f6', '#8b5cf6', '#ec4899', '#f59e0b'][:len(splits)]
+            )
+        )
+    ])
+
+    fig.update_layout(
+        title="Credit Split Visualization",
+        xaxis_title="Percentage (%)",
+        yaxis_title="Partner Role",
+        height=300,
+        showlegend=False
+    )
+
+    st.plotly_chart(fig, width='stretch')
+
+    # Step 4: Save
+    st.markdown("---")
+    st.markdown("### 4️⃣ Save Your Rule")
+
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        rule_name = st.text_input(
+            "Rule Name",
+            value=st.session_state.visual_builder.get("rule_name", "My Custom Rule"),
+            placeholder="e.g., '60/30/10 Enterprise Split'",
+            key="rule_name_input"
+        )
+
+    with col2:
+        st.markdown("")  # Spacing
+        st.markdown("")
+
+        if total_allocated == 100 and rule_name:
+            if st.button("💾 Save Rule", type="primary", width='stretch', key="save_visual_rule"):
+                # Create the rule
+                new_rule = AttributionRule(
+                    id=len(st.session_state.rules) + 1,
+                    name=rule_name,
+                    model_type=AttributionModel.ROLE_WEIGHTED,
+                    config={"weights": {role: pct/100 for role, pct in splits.items()}},
+                    split_constraint=SplitConstraint.MUST_SUM_TO_100,
+                    applies_to={
+                        "min_value": st.session_state.visual_builder.get("min_deal_size", 0)
+                    } if not st.session_state.visual_builder.get("applies_to_all", True) else {},
+                    priority=100,
+                    active=True
+                )
+
+                st.session_state.rules.append(new_rule)
+
+                # Recalculate attribution
+                with st.spinner("💡 Applying your new rule..."):
+                    count = calculate_attribution_for_all_targets()
+
+                st.success(f"✅ Rule '{rule_name}' saved! Created {count} ledger entries")
+                st.balloons()
+
+                # Reset builder
+                st.session_state.visual_builder = {
+                    "rule_name": "My Custom Rule",
+                    "roles": ["Implementation (SI)", "Referral"],
+                    "splits": {"Implementation (SI)": 70, "Referral": 30},
+                    "applies_to_all": True,
+                    "min_deal_size": 0
+                }
+
+                st.rerun()
+        else:
+            st.button("💾 Save Rule", type="primary", width='stretch', disabled=True, key="save_visual_rule_disabled")
+            if total_allocated != 100:
+                st.caption("⚠️ Fix the split percentages first")
+            elif not rule_name:
+                st.caption("⚠️ Enter a rule name first")
+
+    # Advanced: Natural Language Option
+    with st.expander("💬 Or describe your rule in plain English (Advanced)", expanded=False):
+        st.markdown("**Describe your attribution model:**")
+        nl_input = st.text_area(
+            "",
+            placeholder="e.g., 'Give 70% to SI partners and 30% to referral partners for enterprise deals'",
+            height=100,
+            key="nl_advanced"
+        )
+
+        if st.button("🚀 Generate from Description", key="nl_generate"):
+            if nl_input:
+                st.info("💡 Natural language parsing coming soon! For now, use the visual builder above.")
+            else:
+                st.warning("Please enter a description first")
+# ============================================================================
+# TAB 8: RULES & TEMPLATES
+# ============================================================================
+
+with tabs[8]:
+    st.title("📋 Active Rules & Templates")
+
+    if st.session_state.rules:
+        st.markdown(f"### Active Rules ({len(st.session_state.rules)})")
+
+        for rule in st.session_state.rules:
+            with st.expander(f"{'✅' if rule.active else '❌'} {rule.name} ({rule.model_type.value})"):
+                st.markdown(f"**Priority:** {rule.priority}")
+                st.markdown(f"**Split Constraint:** {rule.split_constraint.value}")
+                st.json(rule.config)
+
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button(f"{'Deactivate' if rule.active else 'Activate'}", key=f"toggle_{rule.id}"):
+                        rule.active = not rule.active
+                        st.rerun()
+
+                with col2:
+                    if st.button("Delete", key=f"delete_{rule.id}"):
+                        st.session_state.rules = [r for r in st.session_state.rules if r.id != rule.id]
+                        st.rerun()
+    else:
+        st.info("No rules created yet. Use the Rule Builder tab to create your first rule!")
+
+
+# ============================================================================
+# TAB 9: MEASUREMENT WORKFLOWS
+# ============================================================================
+
+with tabs[9]:
+    st.title("🔄 Measurement Workflows")
+    st.caption("Configure how your company measures partner contribution")
+
+    st.markdown("""
+    **Measurement Workflows** define which data sources you use to track partner impact.
+    Different companies measure partners differently - configure your approach here.
+
+    **Common workflows:**
+    - Deal Registration Primary: Use deal reg if exists, else touchpoints
+    - Marketplace Only: 100% to marketplace partner
+    - CRM Field with Fallback: Use Partner field if set, else calculate from activities
+    - Hybrid SI + Influence: 80% to deal reg, 20% to influence touchpoints
+    """)
+
+    # Initialize workflows in session state
+    if "workflows" not in st.session_state:
+        st.session_state.workflows = []
+
+    # Show existing workflows
+    if st.session_state.workflows:
+        st.markdown("### 📋 Your Workflows")
+
+        for workflow in st.session_state.workflows:
+            with st.expander(f"{'⭐ PRIMARY' if workflow.is_primary else '🔧'} {workflow.name}", expanded=False):
+                st.markdown(f"**Description:** {workflow.description}")
+
+                # Data sources
+                st.markdown("**Data Sources (Priority Order):**")
+                sorted_sources = sorted(workflow.data_sources, key=lambda x: x.priority)
+                for i, ds in enumerate(sorted_sources):
+                    status = "✅ Enabled" if ds.enabled else "❌ Disabled"
+                    st.markdown(f"{i+1}. **{ds.source_type.value}** - Priority {ds.priority} - {status}")
+                    if ds.config:
+                        st.json(ds.config)
+
+                # Conflict resolution
+                st.markdown(f"**Conflict Resolution:** {workflow.conflict_resolution}")
+                st.markdown(f"**Fallback Strategy:** {workflow.fallback_strategy}")
+
+                # Actions
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    if not workflow.is_primary and st.button(f"Set as Primary", key=f"primary_{workflow.id}"):
+                        # Mark this as primary, unmark others
+                        for w in st.session_state.workflows:
+                            w.is_primary = (w.id == workflow.id)
+                        st.success(f"✅ Set {workflow.name} as primary workflow")
+                        st.rerun()
+
+                with col2:
+                    if st.button(f"{'Disable' if workflow.active else 'Enable'}", key=f"toggle_{workflow.id}"):
+                        workflow.active = not workflow.active
+                        st.rerun()
+
+                with col3:
+                    if st.button(f"Delete", key=f"del_workflow_{workflow.id}", type="secondary"):
+                        st.session_state.workflows.remove(workflow)
+                        st.success(f"🗑️ Deleted {workflow.name}")
+                        st.rerun()
+
+    else:
+        st.info("No workflows configured yet. Create one from a template below.")
+
+    # Workflow Templates
+    st.markdown("### 📚 Create from Template")
+
+    template_option = st.selectbox(
+        "Select Template",
+        [
+            "Deal Registration Primary",
+            "Marketplace Only",
+            "CRM Field with Fallback",
+            "Hybrid SI + Influence (80/20)",
+            "Touchpoint Tracking Only (Default)"
+        ],
+        help="Choose a pre-configured workflow template"
+    )
+
+    # Template descriptions
+    template_descriptions = {
+        "Deal Registration Primary": "Use partner-submitted deal regs if they exist, otherwise fall back to touchpoint tracking",
+        "Marketplace Only": "100% attribution to marketplace partner for marketplace transactions",
+        "CRM Field with Fallback": "Use the CRM Partner field if populated, otherwise calculate from touchpoints",
+        "Hybrid SI + Influence (80/20)": "80% credit to deal reg partner, 20% to influence touchpoints",
+        "Touchpoint Tracking Only (Default)": "Traditional activity-based tracking (meetings, emails, etc.)"
+    }
+
+    st.info(f"ℹ️ {template_descriptions[template_option]}")
+
+    if st.button("Create Workflow from Template", type="primary"):
+        from models_new import MeasurementWorkflow, DataSourceConfig, DataSource
+        from datetime import datetime
+
+        # Generate workflow ID
+        workflow_id = len(st.session_state.workflows) + 1
+
+        # Create workflow based on template
+        if template_option == "Deal Registration Primary":
+            workflow = MeasurementWorkflow(
+                id=workflow_id,
+                company_id="demo_company",
+                name="Deal Registration Primary",
+                description="Use deal reg if exists, else touchpoint tracking",
+                data_sources=[
+                    DataSourceConfig(
+                        source_type=DataSource.DEAL_REGISTRATION,
+                        enabled=True,
+                        priority=1,
+                        requires_validation=True,
+                        config={"require_approval": True, "expiry_days": 90}
+                    ),
+                    DataSourceConfig(
+                        source_type=DataSource.TOUCHPOINT_TRACKING,
+                        enabled=True,
+                        priority=2,
+                        config={}
+                    )
+                ],
+                conflict_resolution="priority",
+                fallback_strategy="next_priority",
+                is_primary=len(st.session_state.workflows) == 0,  # First workflow is primary
+                active=True,
+                created_at=datetime.now()
+            )
+
+        elif template_option == "Marketplace Only":
+            workflow = MeasurementWorkflow(
+                id=workflow_id,
+                company_id="demo_company",
+                name="Marketplace Only",
+                description="100% attribution to marketplace partner",
+                data_sources=[
+                    DataSourceConfig(
+                        source_type=DataSource.MARKETPLACE_TRANSACTIONS,
+                        enabled=True,
+                        priority=1,
+                        config={"platform": "aws"}
+                    )
+                ],
+                conflict_resolution="priority",
+                fallback_strategy="manual",
+                applies_to={"metadata.source": "marketplace"},
+                is_primary=False,
+                active=True,
+                created_at=datetime.now()
+            )
+
+        elif template_option == "CRM Field with Fallback":
+            workflow = MeasurementWorkflow(
+                id=workflow_id,
+                company_id="demo_company",
+                name="CRM Partner Field with Fallback",
+                description="Use Partner__c if set, else calculate from touchpoints",
+                data_sources=[
+                    DataSourceConfig(
+                        source_type=DataSource.CRM_OPPORTUNITY_FIELD,
+                        enabled=True,
+                        priority=1,
+                        config={"field_name": "Partner__c", "role_field": "Partner_Role__c"}
+                    ),
+                    DataSourceConfig(
+                        source_type=DataSource.TOUCHPOINT_TRACKING,
+                        enabled=True,
+                        priority=2,
+                        config={}
+                    )
+                ],
+                conflict_resolution="priority",
+                fallback_strategy="next_priority",
+                is_primary=len(st.session_state.workflows) == 0,
+                active=True,
+                created_at=datetime.now()
+            )
+
+        elif template_option == "Hybrid SI + Influence (80/20)":
+            workflow = MeasurementWorkflow(
+                id=workflow_id,
+                company_id="demo_company",
+                name="Hybrid Deal Reg + Influence",
+                description="80% to deal reg partner, 20% to influence touchpoints",
+                data_sources=[
+                    DataSourceConfig(
+                        source_type=DataSource.DEAL_REGISTRATION,
+                        enabled=True,
+                        priority=1,
+                        config={"attribution_weight": 0.8, "require_approval": True}
+                    ),
+                    DataSourceConfig(
+                        source_type=DataSource.TOUCHPOINT_TRACKING,
+                        enabled=True,
+                        priority=2,
+                        config={"attribution_weight": 0.2}
+                    )
+                ],
+                conflict_resolution="merge",  # Combine both sources
+                fallback_strategy="next_priority",
+                is_primary=len(st.session_state.workflows) == 0,
+                active=True,
+                created_at=datetime.now()
+            )
+
+        else:  # Touchpoint Tracking Only
+            workflow = MeasurementWorkflow(
+                id=workflow_id,
+                company_id="demo_company",
+                name="Touchpoint Tracking (Default)",
+                description="Traditional activity-based tracking",
+                data_sources=[
+                    DataSourceConfig(
+                        source_type=DataSource.TOUCHPOINT_TRACKING,
+                        enabled=True,
+                        priority=1,
+                        config={}
+                    )
+                ],
+                conflict_resolution="priority",
+                fallback_strategy="equal_split",
+                is_primary=len(st.session_state.workflows) == 0,
+                active=True,
+                created_at=datetime.now()
+            )
+
+        st.session_state.workflows.append(workflow)
+        st.success(f"✅ Created workflow: {workflow.name}")
+        st.rerun()
+
+    # Data Source Upload
+    st.markdown("---")
+    st.markdown("### 📥 Upload Data from Different Sources")
+
+    upload_source_type = st.selectbox(
+        "Data Source Type",
+        [
+            "Touchpoint Tracking (CSV)",
+            "Deal Registrations (CSV)",
+            "CRM Partner Field Export (CSV)",
+            "Marketplace Transactions (JSON)"
+        ],
+        help="Select the type of data you want to upload"
+    )
+
+    if upload_source_type == "Deal Registrations (CSV)":
+        st.markdown("""
+        **Deal Registration CSV Format:**
+        - `deal_reg_id`: Unique deal registration ID
+        - `partner_id`: Partner identifier
+        - `opportunity_id`: Your internal opportunity ID
+        - `submitted_date`: When partner submitted (YYYY-MM-DD)
+        - `status`: pending/approved/rejected/expired (optional, defaults to pending)
+        - `partner_role`: Partner's role (optional, defaults to Referral)
+        """)
+
+        uploaded_file = st.file_uploader("Upload Deal Registrations CSV", type="csv", key="deal_reg_upload")
+
+        if uploaded_file:
+            if st.button("Process Deal Registrations"):
+                from data_ingestion import DataSourceIngestion
+
+                ingestion = DataSourceIngestion()
+
+                # Get primary workflow for validation rules
+                primary_workflow = next((w for w in st.session_state.workflows if w.is_primary), None)
+
+                # Create target mapping
+                target_mapping = {t.external_id: t.id for t in st.session_state.targets}
+
+                result = ingestion.ingest_deal_registrations(
+                    csv_content=uploaded_file.getvalue(),
+                    workflow=primary_workflow,
+                    target_id_mapping=target_mapping
+                )
+
+                # Add touchpoints to session state
+                st.session_state.touchpoints.extend(result["touchpoints"])
+
+                st.success(f"✅ Created {result['count']} deal registration touchpoints")
+
+                if result["warnings"]:
+                    st.warning(f"⚠️ {len(result['warnings'])} warnings:")
+                    for warning in result["warnings"][:5]:
+                        st.text(f"  • {warning}")
+
+                # Show stats
+                st.json(result["stats"])
+
+    elif upload_source_type == "CRM Partner Field Export (CSV)":
+        st.markdown("""
+        **CRM Export CSV Format:**
+        - `id`: Opportunity ID
+        - `created_date`: Opportunity created date
+        - `Partner__c`: Partner field value
+        - `Partner_Role__c`: Partner role field (optional)
+        - Other fields will be stored in metadata
+        """)
+
+        uploaded_file = st.file_uploader("Upload CRM Export CSV", type="csv", key="crm_upload")
+
+        if uploaded_file:
+            st.info("CRM partner field import coming soon!")
+
+    else:
+        st.info(f"{upload_source_type} import interface coming soon!")
+
+
+# ============================================================================
+# TAB 3: DEAL DRILLDOWN
+# ============================================================================
+
+with tabs[3]:
+    col_title, col_export = st.columns([4, 1])
+
+    with col_title:
+        st.title("💰 Deal Drilldown")
+        st.caption("Detailed attribution breakdown for individual deals - perfect for partner dispute resolution")
+
+    with col_export:
+        st.markdown("") # Spacing
+        if st.button("📥 Export CSV", key="deal_export", width='stretch'):
+            filtered_ledger = apply_global_filters(st.session_state.ledger)
+            csv_data = export_ledger_to_csv(filtered_ledger)
+            st.download_button(
+                "Download Data",
+                csv_data,
+                "deal_drilldown.csv",
+                "text/csv",
+                key="deal_download"
+            )
+
+    st.markdown("---")
+
+    if not st.session_state.targets:
+        st.info("No deals available. Load data first in the Data Import tab.")
+    else:
+        # Deal Selector
+        st.markdown("### Select Deal to Analyze")
+
+        deal_options = {}
+        for target in st.session_state.targets:
+            account_name = target.metadata.get('account_name', 'Unknown Account')
+            deal_label = f"{target.external_id} - {account_name} (${target.value:,.0f})"
+            deal_options[deal_label] = target.id
+
+        selected_deal_label = st.selectbox(
+            "Choose Deal",
+            options=list(deal_options.keys()),
+            help="Select a deal to see its full attribution breakdown"
+        )
+
+        selected_target_id = deal_options[selected_deal_label]
+        selected_target = next(t for t in st.session_state.targets if t.id == selected_target_id)
+
+        # Deal Summary Card
+        st.markdown("---")
+        st.markdown("### Deal Information")
+
+        deal_col1, deal_col2, deal_col3, deal_col4 = st.columns(4)
+
+        with deal_col1:
+            st.metric("Deal Value", f"${selected_target.value:,.0f}")
+
+        with deal_col2:
+            account_name = selected_target.metadata.get('account_name', 'Unknown')
+            st.metric("Account", account_name)
+
+        with deal_col3:
+            close_date = selected_target.timestamp.strftime("%Y-%m-%d") if selected_target.timestamp else "N/A"
+            st.metric("Close Date", close_date)
+
+        with deal_col4:
+            region = selected_target.metadata.get('region', 'N/A')
+            st.metric("Region", region)
+
+        # Partner Touchpoints
+        st.markdown("---")
+        st.markdown("### Partner Engagement History")
+
+        deal_touchpoints = [tp for tp in st.session_state.touchpoints if tp.target_id == selected_target_id]
+
+        if deal_touchpoints:
+            touchpoint_data = []
+            for tp in sorted(deal_touchpoints, key=lambda x: x.timestamp or datetime.min):
+                partner_name = st.session_state.partners.get(tp.partner_id, tp.partner_id)
+                touchpoint_data.append({
+                    "Partner": partner_name,
+                    "Role": tp.role,
+                    "Date": tp.timestamp.strftime("%Y-%m-%d") if tp.timestamp else "N/A",
+                    "Activity Weight": f"{tp.weight:.0f}",
+                    "Days Before Close": (selected_target.timestamp - tp.timestamp).days if (selected_target.timestamp and tp.timestamp) else "N/A"
                 })
-                st.download_button(
-                    "Download Account Excel",
-                    data=excel_data,
-                    file_name=f"account_{selected_account_id}_report.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
-                )
 
-        with export_drilldown_cols[1]:
-            if not acct_use_cases.empty or not acct_ap.empty:
-                pdf_data = create_account_drilldown_report(
-                    account_name=acct_choice,
-                    use_cases=acct_use_cases,
-                    partners=acct_ap,
-                    revenue=rev,
-                    attribution=attr_by_partner
-                )
-                st.download_button(
-                    "Download Account PDF",
-                    data=pdf_data,
-                    file_name=f"account_{selected_account_id}_report.pdf",
-                    mime="application/pdf",
-                    use_container_width=True
-                )
-
-# --- Tab 4: Relationship Summary (AI) ---
-with tabs[4]:
-    st.subheader("Relationship Summary (AI)")
-    st.caption("Blend accounts, use cases, partners, activities, and recent attribution into a single summary. Works without an API key using a deterministic fallback.")
-    acct_map_rel = {f"{row['account_name']} ({row['account_id']})": row["account_id"] for _, row in accounts.iterrows()}
-    if not acct_map_rel:
-        st.info("No accounts available.")
-    else:
-        acct_choice_rel = st.selectbox("Account", list(acct_map_rel.keys()), key="rel_summary_account")
-        acct_id_rel = acct_map_rel[acct_choice_rel]
-        if st.button("Generate summary"):
-            summary_text, err = generate_relationship_summary(acct_id_rel)
-            run_sql("""
-              INSERT INTO ai_summaries(account_id, created_at, summary_text)
-              VALUES (?, ?, ?);
-            """, (acct_id_rel, datetime.utcnow().isoformat(), summary_text))
-            st.success("Summary generated.")
-            st.write(summary_text)
-            if err:
-                st.caption(f"LLM note: {err}")
-        latest = read_sql("""
-          SELECT summary_text, created_at
-          FROM ai_summaries
-          WHERE account_id = ?
-          ORDER BY created_at DESC
-          LIMIT 1;
-        """, (acct_id_rel,))
-        if not latest.empty:
-            st.caption(f"Latest summary ({latest.loc[0, 'created_at']}):")
-            st.write(latest.loc[0, "summary_text"])
-        st.markdown("**Recent activities**")
-        rel_acts = read_sql("""
-          SELECT activity_date, activity_type, notes, partner_id
-          FROM activities
-          WHERE account_id = ?
-          ORDER BY activity_date DESC;
-        """, (acct_id_rel,))
-        if rel_acts.empty:
-            st.info("No activities logged.")
+            st.dataframe(pd.DataFrame(touchpoint_data), width='stretch', hide_index=True)
         else:
-            st.dataframe(rel_acts, use_container_width=True)
+            st.warning("No partner touchpoints recorded for this deal.")
 
-# --- Tab 5: Audit Trail ---
-with tabs[5]:
-    st.subheader("Audit Trail")
-    st.caption("Complete history of all changes and decisions in the attribution system")
+        # Attribution Breakdown
+        st.markdown("---")
+        st.markdown("### Attribution Calculation Breakdown")
 
-    # Filters
-    filter_row = st.columns([2, 2, 2, 1])
-    with filter_row[0]:
-        trail_days = st.selectbox(
-            "Time Period",
-            [7, 14, 30, 60, 90, 180, 365],
-            index=2,
-            format_func=lambda x: f"Last {x} days",
-            key="audit_days"
-        )
+        deal_ledger = [entry for entry in st.session_state.ledger if entry.target_id == selected_target_id]
 
-    with filter_row[1]:
-        event_type_filter = st.selectbox(
-            "Event Type",
-            ["All", "split_change", "partner_link", "use_case_created", "rule_applied", "manual_override"],
-            key="event_type_filter"
-        )
+        if deal_ledger:
+            # Summary metrics
+            total_attributed = sum(entry.attributed_value for entry in deal_ledger)
+            attribution_coverage = (total_attributed / selected_target.value * 100) if selected_target.value > 0 else 0
 
-    with filter_row[2]:
-        account_filter_audit = st.selectbox(
-            "Account",
-            ["All"] + [f"{row['account_name']}" for _, row in accounts.iterrows()],
-            key="account_filter_audit"
-        )
+            summary_col1, summary_col2, summary_col3 = st.columns(3)
 
-    with filter_row[3]:
-        show_details = st.checkbox("Show Details", value=False, key="audit_details")
+            with summary_col1:
+                st.metric("Total Attributed", f"${total_attributed:,.2f}", help="Sum of all partner attribution for this deal")
 
-    # Calculate date range
-    audit_end_date = date.today()
-    audit_start_date = audit_end_date - timedelta(days=trail_days)
-    audit_start_str = audit_start_date.isoformat()
-    audit_end_str = audit_end_date.isoformat()
+            with summary_col2:
+                st.metric("Coverage", f"{attribution_coverage:.1f}%", help="Percentage of deal value attributed to partners")
 
-    # Fetch audit trail
-    audit_query = """
-        SELECT
-            at.timestamp,
-            at.event_type,
-            at.account_id,
-            a.account_name,
-            at.partner_id,
-            p.partner_name,
-            at.old_value,
-            at.new_value,
-            at.source,
-            at.metadata
-        FROM audit_trail at
-        LEFT JOIN accounts a ON a.account_id = at.account_id
-        LEFT JOIN partners p ON p.partner_id = at.partner_id
-        WHERE at.timestamp >= ?
-    """
-    params = [audit_start_str]
+            with summary_col3:
+                st.metric("Partners Credited", len(deal_ledger), help="Number of partners receiving attribution")
 
-    if event_type_filter != "All":
-        audit_query += " AND at.event_type = ?"
-        params.append(event_type_filter)
+            # Detailed Attribution Table
+            st.markdown("#### Partner-by-Partner Breakdown")
 
-    if account_filter_audit != "All":
-        audit_query += " AND a.account_name = ?"
-        params.append(account_filter_audit)
+            attribution_data = []
+            for entry in sorted(deal_ledger, key=lambda e: e.attributed_value, reverse=True):
+                partner_name = st.session_state.partners.get(entry.partner_id, entry.partner_id)
+                rule = next((r for r in st.session_state.rules if r.id == entry.rule_id), None)
+                rule_name = rule.name if rule else f"Rule #{entry.rule_id}"
 
-    audit_query += " ORDER BY at.timestamp DESC LIMIT 1000;"
+                # Get touchpoint details for this partner
+                partner_tps = [tp for tp in deal_touchpoints if tp.partner_id == entry.partner_id]
+                num_touchpoints = len(partner_tps)
+                roles = ", ".join(set(tp.role for tp in partner_tps)) if partner_tps else "N/A"
 
-    audit_trail = read_sql(audit_query, tuple(params))
+                attribution_data.append({
+                    "Partner": partner_name,
+                    "Role(s)": roles,
+                    "Touchpoints": num_touchpoints,
+                    "Attribution %": f"{entry.split_percentage:.1%}",
+                    "Attributed $": f"${entry.attributed_value:,.2f}",
+                    "Rule Applied": rule_name,
+                    "Calculated": entry.calculation_timestamp.strftime("%Y-%m-%d %H:%M")
+                })
 
-    # Display metrics
-    metrics_audit = st.columns(4)
-    with metrics_audit[0]:
-        st.metric("Total Events", len(audit_trail))
+            st.dataframe(pd.DataFrame(attribution_data), width='stretch', hide_index=True)
 
-    if not audit_trail.empty:
-        with metrics_audit[1]:
-            unique_accounts = audit_trail['account_id'].nunique()
-            st.metric("Accounts Affected", unique_accounts)
+            # Visualization
+            st.markdown("#### Attribution Split Visualization")
 
-        with metrics_audit[2]:
-            unique_partners = audit_trail['partner_id'].nunique()
-            st.metric("Partners Involved", unique_partners)
+            attribution_chart_df = pd.DataFrame([
+                {"Partner": st.session_state.partners.get(entry.partner_id, entry.partner_id),
+                 "Value": entry.attributed_value}
+                for entry in deal_ledger
+            ])
 
-        with metrics_audit[3]:
-            event_types = audit_trail['event_type'].nunique()
-            st.metric("Event Types", event_types)
-
-    st.markdown("---")
-
-    # Display audit trail
-    if audit_trail.empty:
-        st.info("No audit trail events found for the selected filters.")
-    else:
-        # Format the dataframe for display
-        display_audit = audit_trail.copy()
-
-        # Rename columns for better readability
-        display_audit['Timestamp'] = pd.to_datetime(display_audit['timestamp']).dt.strftime('%Y-%m-%d %H:%M:%S')
-        display_audit['Event Type'] = display_audit['event_type']
-        display_audit['Account'] = display_audit['account_name'].fillna('N/A')
-        display_audit['Partner'] = display_audit['partner_name'].fillna('N/A')
-
-        if show_details:
-            display_audit['Old Value'] = display_audit['old_value'].fillna('N/A')
-            display_audit['New Value'] = display_audit['new_value'].fillna('N/A')
-            display_audit['Source'] = display_audit['source'].fillna('N/A')
-            display_audit['Metadata'] = display_audit['metadata'].fillna('N/A')
-
-            st.dataframe(
-                display_audit[['Timestamp', 'Event Type', 'Account', 'Partner', 'Old Value', 'New Value', 'Source', 'Metadata']],
-                use_container_width=True,
-                hide_index=True
+            import plotly.express as px
+            fig = px.pie(
+                attribution_chart_df,
+                values='Value',
+                names='Partner',
+                title=f"Attribution Split - {selected_target.external_id}",
+                hole=0.4
             )
+            st.plotly_chart(fig, width='stretch')
+
+            # Audit Trail
+            with st.expander("🔍 View Detailed Audit Trail"):
+                st.markdown("**Calculation Logic:**")
+                for entry in deal_ledger:
+                    rule = next((r for r in st.session_state.rules if r.id == entry.rule_id), None)
+                    if rule:
+                        st.json({
+                            "partner_id": entry.partner_id,
+                            "rule_name": rule.name,
+                            "model_type": rule.model_type.value,
+                            "config": rule.config,
+                            "split_percentage": entry.split_percentage,
+                            "attributed_value": entry.attributed_value,
+                            "audit_trail": entry.audit_trail
+                        })
+
         else:
-            st.dataframe(
-                display_audit[['Timestamp', 'Event Type', 'Account', 'Partner']],
-                use_container_width=True,
-                hide_index=True
-            )
+            st.warning("No attribution calculated for this deal. Run attribution calculation in the Ledger Explorer tab.")
 
-    st.markdown("---")
+        # Manual Override Section
+        st.markdown("---")
+        st.markdown("### 🛠️ Manual Attribution Override")
 
-    # Export audit trail
-    st.markdown("### Export Audit Trail")
-    export_audit_cols = st.columns(3)
+        with st.expander("⚠️ Adjust Attribution Manually (Advanced)"):
+            st.warning("**Use with caution!** Manual overrides bypass attribution rules and are recorded in the audit trail.")
 
-    with export_audit_cols[0]:
-        if not audit_trail.empty:
-            csv_data = export_to_csv(audit_trail, "audit_trail.csv")
+            st.markdown("**When to use manual overrides:**")
+            st.markdown("""
+            - Partner disputes that require special handling
+            - One-time exceptional circumstances
+            - Corrections to data entry errors
+            - Executive decisions that override standard rules
+            """)
+
+            if deal_ledger:
+                st.markdown("#### Current Attribution")
+
+                # Create editable form
+                with st.form(key=f"override_form_{selected_target_id}"):
+                    st.markdown("Adjust the split percentages below. They must sum to 100%.")
+
+                    override_splits = {}
+                    total_percentage = 0
+
+                    for entry in sorted(deal_ledger, key=lambda e: e.attributed_value, reverse=True):
+                        partner_name = st.session_state.partners.get(entry.partner_id, entry.partner_id)
+                        current_percent = entry.split_percentage * 100
+
+                        override_col1, override_col2 = st.columns([3, 1])
+
+                        with override_col1:
+                            st.markdown(f"**{partner_name}** ({entry.partner_id})")
+
+                        with override_col2:
+                            new_percent = st.number_input(
+                                f"Split % for {partner_name}",
+                                min_value=0.0,
+                                max_value=100.0,
+                                value=current_percent,
+                                step=0.1,
+                                format="%.1f",
+                                key=f"override_{entry.partner_id}_{selected_target_id}_{entry.id}",
+                                label_visibility="collapsed"
+                            )
+                            override_splits[entry.partner_id] = new_percent / 100.0
+                            total_percentage += new_percent
+
+                    # Show total validation
+                    if abs(total_percentage - 100.0) > 0.1:
+                        st.error(f"⚠️ Total must equal 100%. Current total: {total_percentage:.1f}%")
+                        submit_disabled = True
+                    else:
+                        st.success(f"✓ Total: {total_percentage:.1f}%")
+                        submit_disabled = False
+
+                    # Override reason
+                    override_reason = st.text_area(
+                        "Reason for Override (Required)",
+                        placeholder="Explain why manual override is necessary...",
+                        help="This will be recorded in the audit trail for compliance"
+                    )
+
+                    submit_col1, submit_col2 = st.columns([1, 1])
+
+                    with submit_col1:
+                        submit_override = st.form_submit_button(
+                            "Apply Override",
+                            type="primary" if not submit_disabled else None,
+                            disabled=submit_disabled or not override_reason,
+                            width='stretch'
+                        )
+
+                    with submit_col2:
+                        if st.form_submit_button("Reset to Calculated", width='stretch'):
+                            st.info("Recalculate attribution in the Ledger Explorer to restore automatic calculations.")
+
+                if submit_override and override_reason:
+                    # Apply manual overrides
+                    current_user = "admin"  # TODO: Replace with actual user when auth is implemented
+
+                    # Remove old ledger entries for this deal
+                    st.session_state.ledger = [e for e in st.session_state.ledger if e.target_id != selected_target_id]
+
+                    # Create new ledger entries with manual override
+                    next_ledger_id = max([e.id for e in st.session_state.ledger], default=0) + 1
+
+                    for partner_id, split_pct in override_splits.items():
+                        if split_pct > 0:  # Only create entries for non-zero splits
+                            # Find original entry to get rule_id
+                            original_entry = next((e for e in deal_ledger if e.partner_id == partner_id), None)
+                            rule_id = original_entry.rule_id if original_entry else 0
+
+                            override_entry = LedgerEntry(
+                                id=next_ledger_id,
+                                target_id=selected_target_id,
+                                partner_id=partner_id,
+                                attributed_value=selected_target.value * split_pct,
+                                split_percentage=split_pct,
+                                rule_id=rule_id,
+                                calculation_timestamp=datetime.now(),
+                                override_by=current_user,
+                                override_reason=override_reason,
+                                audit_trail={
+                                    "method": "manual_override",
+                                    "override_by": current_user,
+                                    "override_reason": override_reason,
+                                    "override_timestamp": datetime.now().isoformat(),
+                                    "original_split": next((e.split_percentage for e in deal_ledger if e.partner_id == partner_id), None)
+                                }
+                            )
+
+                            st.session_state.ledger.append(override_entry)
+                            next_ledger_id += 1
+
+                    st.success(f"✅ Manual override applied! {len([s for s in override_splits.values() if s > 0])} partners updated.")
+                    st.balloons()
+                    st.rerun()
+
+            else:
+                st.info("No attribution calculated yet. Run attribution calculation first.")
+
+        # Export Deal Report
+        st.markdown("---")
+        st.markdown("### Export Deal Report")
+
+        if deal_ledger:
+            export_col1, export_col2 = st.columns([3, 1])
+
+            with export_col1:
+                st.info("Generate a detailed PDF report for this deal, perfect for sharing with partners or resolving disputes.")
+
+            with export_col2:
+                # Generate simple CSV export for now
+                deal_export_df = pd.DataFrame(attribution_data) if deal_ledger else pd.DataFrame()
+
+                if not deal_export_df.empty:
+                    csv_data = deal_export_df.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        "📥 Download CSV",
+                        data=csv_data,
+                        file_name=f"deal_{selected_target.external_id}_attribution.csv",
+                        mime="text/csv",
+                        width='stretch'
+                    )
+
+
+# ============================================================================
+# TAB 10: PERIOD MANAGEMENT
+# ============================================================================
+
+with tabs[10]:
+    # Check if user has permission to manage periods
+    if st.session_state.current_user.role.value not in ["admin", "manager"]:
+        st.error("🔒 Access Denied")
+        st.warning("You need Admin or Manager role to access period management.")
+        st.info(f"Your current role: {st.session_state.current_user.role.value}")
+        st.stop()
+
+    render_period_management(st.session_state.session_manager, st.session_state.current_user)
+
+
+# ============================================================================
+# TAB 11: LEDGER EXPLORER
+# ============================================================================
+
+with tabs[11]:
+    st.title("🔍 Attribution Ledger Explorer")
+    st.caption("Immutable audit trail of all attribution calculations")
+
+    if st.button("🔄 Recalculate Attribution", type="primary"):
+        with st.spinner("Calculating..."):
+            count = calculate_attribution_for_all_targets()
+            st.success(f"✅ Created {count} new ledger entries")
+            st.rerun()
+
+    if st.session_state.ledger:
+        st.markdown(f"### Ledger Entries ({len(st.session_state.ledger)})")
+
+        ledger_df = pd.DataFrame([
+            {
+                "ID": entry.id,
+                "Target ID": entry.target_id,
+                "Partner": st.session_state.partners.get(entry.partner_id, entry.partner_id),
+                "Attributed Value": f"${entry.attributed_value:,.2f}",
+                "Split %": f"{entry.split_percentage:.1%}",
+                "Rule ID": entry.rule_id,
+                "Timestamp": entry.calculation_timestamp.strftime("%Y-%m-%d %H:%M")
+            }
+            for entry in st.session_state.ledger[-100:]  # Show last 100
+        ])
+
+        st.dataframe(ledger_df, width='stretch')
+
+        # Export ledger
+        if st.button("Download Full Ledger (CSV)"):
+            full_df = pd.DataFrame([e.to_dict() for e in st.session_state.ledger])
+            csv = full_df.to_csv(index=False).encode("utf-8")
             st.download_button(
-                "Download Audit Trail CSV",
-                data=csv_data,
-                file_name=f"audit_trail_{audit_start_str}_to_{audit_end_str}.csv",
-                mime="text/csv",
-                use_container_width=True
+                "Download",
+                data=csv,
+                file_name=f"ledger_{date.today()}.csv",
+                mime="text/csv"
             )
-
-    with export_audit_cols[1]:
-        if not audit_trail.empty:
-            excel_data = export_to_excel({
-                "Audit Trail": audit_trail
-            })
-            st.download_button(
-                "Download Audit Trail Excel",
-                data=excel_data,
-                file_name=f"audit_trail_{audit_start_str}_to_{audit_end_str}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
-
-    with export_audit_cols[2]:
-        if not audit_trail.empty:
-            pdf_data = generate_pdf_report(
-                title="Audit Trail Report",
-                summary_data={
-                    "Report Period": f"{audit_start_str} to {audit_end_str}",
-                    "Total Events": len(audit_trail),
-                    "Accounts Affected": audit_trail['account_id'].nunique(),
-                    "Partners Involved": audit_trail['partner_id'].nunique(),
-                },
-                tables={"Audit Events": audit_trail[['timestamp', 'event_type', 'account_name', 'partner_name', 'source']]}
-            )
-            st.download_button(
-                "Download Audit Trail PDF",
-                data=pdf_data,
-                file_name=f"audit_trail_{audit_start_str}_to_{audit_end_str}.pdf",
-                mime="application/pdf",
-                use_container_width=True
-            )
-
+    else:
+        st.info("Ledger is empty. Import data and create rules, then click 'Recalculate Attribution'.")
