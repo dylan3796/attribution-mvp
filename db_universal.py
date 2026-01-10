@@ -163,6 +163,7 @@ class Database:
             name TEXT NOT NULL,
             model_type TEXT NOT NULL,
             config TEXT NOT NULL,
+            priority INTEGER DEFAULT 0,
             created_at {timestamp_type} DEFAULT {default_timestamp},
             created_by TEXT,
             is_active {bool_type} DEFAULT {'TRUE' if self.is_postgres else '1'}
@@ -238,10 +239,38 @@ class Database:
         );
         """)
 
+        # Run migrations for existing databases
+        self._run_migrations()
+
         # Create indexes for performance
         self._create_indexes()
 
         logger.info("✅ Database schema initialized successfully")
+
+    def _run_migrations(self):
+        """Run database migrations for existing databases."""
+        migrations = [
+            # Add priority column to attribution_rule if it doesn't exist
+            ("attribution_rule", "priority", "ALTER TABLE attribution_rule ADD COLUMN priority INTEGER DEFAULT 0"),
+        ]
+
+        for table, column, sql in migrations:
+            try:
+                # Check if column exists by querying table info
+                cursor = self.adapter.execute(f"PRAGMA table_info({table})")
+                columns = [row[1] for row in cursor.fetchall()]
+                if column not in columns:
+                    self.run_sql(sql)
+                    logger.info(f"Migration: Added {column} to {table}")
+            except Exception as e:
+                # PostgreSQL uses different syntax
+                if self.is_postgres:
+                    try:
+                        self.run_sql(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} INTEGER DEFAULT 0")
+                    except Exception as pg_e:
+                        logger.warning(f"Migration warning: {pg_e}")
+                else:
+                    logger.warning(f"Migration warning: {e}")
 
     def _create_indexes(self):
         """Create indexes for performance."""
