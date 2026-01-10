@@ -21,7 +21,7 @@ import pandas as pd
 import io
 from typing import Dict, List, Tuple, Optional, Any
 from datetime import datetime
-from models_new import (
+from models import (
     AttributionTarget,
     PartnerTouchpoint,
     TargetType,
@@ -586,7 +586,7 @@ class DataSourceIngestion:
     def __init__(self):
         """Initialize data source ingestion handler."""
         # Import here to avoid circular dependency
-        from models_new import DataSource, MeasurementWorkflow
+        from models import DataSource, MeasurementWorkflow
         self.DataSource = DataSource
         self.MeasurementWorkflow = MeasurementWorkflow
 
@@ -624,7 +624,7 @@ class DataSourceIngestion:
                 "stats": {...}
             }
         """
-        from models_new import DataSource
+        from models import DataSource
 
         try:
             # Parse CSV
@@ -752,7 +752,7 @@ class DataSourceIngestion:
                 "stats": {...}
             }
         """
-        from models_new import DataSource
+        from models import DataSource
 
         touchpoints = []
         warnings = []

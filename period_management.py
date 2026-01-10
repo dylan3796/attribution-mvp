@@ -13,7 +13,7 @@ from typing import List, Dict, Optional
 from calendar import monthrange
 import plotly.graph_objects as go
 
-from models_new import AttributionPeriod, PeriodType, PeriodStatus
+from models import AttributionPeriod, PeriodType, PeriodStatus
 from session_manager import SessionManager
 
 

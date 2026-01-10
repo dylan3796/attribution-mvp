@@ -16,7 +16,7 @@ from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
 import re
 
-from models_new import (
+from models import (
     PartnerTouchpoint, AttributionTarget,
     TouchpointType, DataSource
 )

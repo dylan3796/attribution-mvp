@@ -11,7 +11,7 @@ Templates are organized by:
 """
 
 from typing import Dict, List, Any, Optional
-from models_new import RULE_TEMPLATES, AttributionModel, SplitConstraint
+from models import RULE_TEMPLATES, AttributionModel, SplitConstraint
 
 
 # ============================================================================

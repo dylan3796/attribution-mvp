@@ -14,7 +14,7 @@ from typing import List, Dict, Optional
 from dataclasses import dataclass, field
 from enum import Enum
 
-from models_new import PartnerTouchpoint, AttributionTarget, TouchpointType, DataSource
+from models import PartnerTouchpoint, AttributionTarget, TouchpointType, DataSource
 
 
 # ============================================================================

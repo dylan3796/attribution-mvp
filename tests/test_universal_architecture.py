@@ -15,7 +15,7 @@ import io
 from datetime import datetime, date, timedelta
 
 # Import new architecture
-from models_new import (
+from models import (
     AttributionTarget, PartnerTouchpoint, AttributionRule, LedgerEntry,
     TargetType, TouchpointType, AttributionModel, SplitConstraint,
     validate_rule_config, validate_touchpoint_for_model,

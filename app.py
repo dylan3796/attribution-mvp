@@ -29,7 +29,7 @@ warnings.filterwarnings('ignore', message='.*Plotly configuration.*')
 warnings.filterwarnings('ignore', message='.*label.*got an empty value.*')
 
 # New universal architecture imports
-from models_new import (
+from models import (
     AttributionTarget, PartnerTouchpoint, AttributionRule, LedgerEntry,
     TargetType, TouchpointType, AttributionModel, SplitConstraint,
     DEFAULT_PARTNER_ROLES, SCHEMA_VERSION
@@ -70,7 +70,7 @@ from utils_partner import (
 )
 
 # Database persistence
-from db_universal import Database
+from db import Database
 from session_manager import SessionManager
 
 # Authentication
@@ -2544,7 +2544,7 @@ with tabs[9]:
     st.info(f"ℹ️ {template_descriptions[template_option]}")
 
     if st.button("Create Workflow from Template", type="primary"):
-        from models_new import MeasurementWorkflow, DataSourceConfig, DataSource
+        from models import MeasurementWorkflow, DataSourceConfig, DataSource
         from datetime import datetime
 
         # Generate workflow ID

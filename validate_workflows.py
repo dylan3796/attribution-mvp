@@ -10,7 +10,7 @@ Usage:
 """
 
 from datetime import datetime, timedelta
-from models_new import (
+from models import (
     AttributionTarget,
     PartnerTouchpoint,
     AttributionRule,

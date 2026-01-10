@@ -17,7 +17,7 @@ import os
 import json
 import re
 from typing import Dict, Any, Optional, Tuple
-from models_new import AttributionModel, SplitConstraint, RULE_TEMPLATES, validate_rule_config
+from models import AttributionModel, SplitConstraint, RULE_TEMPLATES, validate_rule_config
 
 # Try to import Claude API
 try:

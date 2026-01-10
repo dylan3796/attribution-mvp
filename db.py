@@ -1,61 +1,132 @@
-"""Database operations and schema management."""
+"""
+Database operations and schema management.
+
+Supports both SQLite (local development) and PostgreSQL (production).
+"""
 
 import os
 import json
 import random
 import sqlite3
 import logging
-from datetime import date, timedelta
-from typing import Optional, Tuple
+from datetime import date, datetime, timedelta
+from typing import Optional, Tuple, Any
 import uuid
 
 import pandas as pd
 
 from models import DEFAULT_SETTINGS, SCHEMA_VERSION
+from db_connection import get_connection, is_postgres, DatabaseAdapter
 
 logger = logging.getLogger(__name__)
 
 
 class Database:
-    """Database connection and operations manager."""
+    """Database connection and operations manager supporting SQLite and PostgreSQL."""
 
-    def __init__(self, db_path: str):
-        self.db_path = db_path
+    def __init__(self, db_path: Optional[str] = None):
+        """
+        Initialize database connection.
 
-    def get_conn(self) -> sqlite3.Connection:
+        Args:
+            db_path: Path to SQLite database (ignored if using PostgreSQL)
+        """
+        self.db_path = db_path or "attribution.db"
+        self._is_postgres = is_postgres()
+        self._conn = None
+        self._adapter = None
+
+    @property
+    def is_postgres(self) -> bool:
+        """Check if using PostgreSQL."""
+        return self._is_postgres
+
+    def get_conn(self):
         """Get a database connection."""
-        return sqlite3.connect(self.db_path, check_same_thread=False)
+        if self._is_postgres:
+            # For PostgreSQL, reuse connection
+            if self._conn is None:
+                self._conn = get_connection()
+                self._adapter = DatabaseAdapter(self._conn)
+            return self._conn
+        else:
+            # For SQLite, create new connection each time for thread safety
+            return sqlite3.connect(self.db_path, check_same_thread=False)
+
+    def _get_adapter(self, conn) -> DatabaseAdapter:
+        """Get adapter for connection."""
+        if self._is_postgres and self._adapter:
+            return self._adapter
+        return DatabaseAdapter(conn)
 
     def run_sql(self, sql: str, params: tuple = ()) -> None:
         """Execute a SQL statement that modifies data."""
         try:
             conn = self.get_conn()
-            cur = conn.cursor()
-            cur.execute(sql, params)
-            conn.commit()
-            conn.close()
+            adapter = self._get_adapter(conn)
+            adapter.execute(sql, params)
+            adapter.commit()
+            if not self._is_postgres:
+                conn.close()
             logger.debug(f"Executed SQL: {sql[:100]}... with params {params}")
         except Exception as e:
             logger.error(f"Error executing SQL: {e}")
+            if self._is_postgres and self._adapter:
+                self._adapter.rollback()
             raise
 
     def read_sql(self, sql: str, params: tuple = ()) -> pd.DataFrame:
         """Execute a SQL query and return results as DataFrame."""
         try:
             conn = self.get_conn()
+            # Convert ? to %s for PostgreSQL
+            if self._is_postgres and '?' in sql:
+                sql = sql.replace('?', '%s')
             df = pd.read_sql_query(sql, conn, params=params)
-            conn.close()
+            if not self._is_postgres:
+                conn.close()
             logger.debug(f"Read SQL: {sql[:100]}... returned {len(df)} rows")
             return df
         except Exception as e:
             logger.error(f"Error reading SQL: {e}")
             raise
 
+    def execute_with_return(self, sql: str, params: tuple = ()):
+        """Execute SQL and return cursor (for INSERT...RETURNING)."""
+        try:
+            conn = self.get_conn()
+            adapter = self._get_adapter(conn)
+            cursor = adapter.execute(sql, params)
+            adapter.commit()
+            return cursor
+        except Exception as e:
+            logger.error(f"Error executing SQL with return: {e}")
+            if self._is_postgres and self._adapter:
+                self._adapter.rollback()
+            raise
+
     def init_db(self) -> None:
         """Initialize database schema and apply migrations."""
-        logger.info("Initializing database schema...")
+        logger.info(f"Initializing database schema ({'PostgreSQL' if self._is_postgres else 'SQLite'})...")
 
-        # Create tables
+        # Determine SQL syntax based on database type
+        if self._is_postgres:
+            pk_auto = "SERIAL PRIMARY KEY"
+            timestamp_type = "TIMESTAMP"
+            bool_type = "BOOLEAN"
+            bool_true = "TRUE"
+            bool_false = "FALSE"
+        else:
+            pk_auto = "INTEGER PRIMARY KEY AUTOINCREMENT"
+            timestamp_type = "TEXT"
+            bool_type = "INTEGER"
+            bool_true = "1"
+            bool_false = "0"
+
+        # ====================================================================
+        # Core tables
+        # ====================================================================
+
         self.run_sql("""
         CREATE TABLE IF NOT EXISTS accounts (
             account_id TEXT PRIMARY KEY,
@@ -186,7 +257,6 @@ class Database:
         );
         """)
 
-        # Audit trail table
         self.run_sql("""
         CREATE TABLE IF NOT EXISTS audit_trail (
             audit_id TEXT PRIMARY KEY,
@@ -203,87 +273,122 @@ class Database:
         """)
 
         # ====================================================================
-        # Universal Attribution System Tables (models_new.py)
+        # Authentication tables (from db_universal)
         # ====================================================================
 
-        # Attribution targets (opportunities, consumption events, etc.)
-        self.run_sql("""
-        CREATE TABLE IF NOT EXISTS attribution_target (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            type TEXT NOT NULL,
-            external_id TEXT NOT NULL,
-            value REAL NOT NULL,
-            timestamp TEXT NOT NULL,
-            metadata TEXT,
-            name TEXT,
-            created_at TEXT NOT NULL
+        self.run_sql(f"""
+        CREATE TABLE IF NOT EXISTS organizations (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            created_at {timestamp_type} DEFAULT CURRENT_TIMESTAMP
         );
         """)
 
-        # Partner touchpoints (evidence of partner involvement)
-        self.run_sql("""
+        self.run_sql(f"""
+        CREATE TABLE IF NOT EXISTS users (
+            id {pk_auto},
+            email TEXT UNIQUE NOT NULL,
+            name TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            salt TEXT NOT NULL,
+            role TEXT NOT NULL,
+            organization_id TEXT NOT NULL,
+            is_active {bool_type} DEFAULT {bool_true},
+            created_at {timestamp_type} DEFAULT CURRENT_TIMESTAMP,
+            last_login {timestamp_type},
+            FOREIGN KEY (organization_id) REFERENCES organizations(id)
+        );
+        """)
+
+        self.run_sql(f"""
+        CREATE TABLE IF NOT EXISTS sessions (
+            id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            created_at {timestamp_type} DEFAULT CURRENT_TIMESTAMP,
+            expires_at {timestamp_type} NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        );
+        """)
+
+        # ====================================================================
+        # Universal Attribution System Tables
+        # ====================================================================
+
+        self.run_sql(f"""
+        CREATE TABLE IF NOT EXISTS attribution_target (
+            id {pk_auto},
+            type TEXT NOT NULL,
+            external_id TEXT NOT NULL,
+            value REAL NOT NULL,
+            timestamp {timestamp_type} NOT NULL,
+            metadata TEXT,
+            name TEXT,
+            created_at {timestamp_type} DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+
+        self.run_sql(f"""
         CREATE TABLE IF NOT EXISTS partner_touchpoint (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id {pk_auto},
             partner_id TEXT NOT NULL,
             target_id INTEGER NOT NULL,
             touchpoint_type TEXT NOT NULL,
             role TEXT NOT NULL,
             weight REAL DEFAULT 1.0,
-            timestamp TEXT,
-            source TEXT NOT NULL DEFAULT 'touchpoint_tracking',
+            timestamp {timestamp_type},
+            source TEXT DEFAULT 'touchpoint_tracking',
             source_id TEXT,
             source_confidence REAL DEFAULT 1.0,
             deal_reg_status TEXT,
-            deal_reg_submitted_date TEXT,
-            deal_reg_approved_date TEXT,
-            requires_approval INTEGER DEFAULT 0,
+            deal_reg_submitted_date {timestamp_type},
+            deal_reg_approved_date {timestamp_type},
+            requires_approval {bool_type} DEFAULT {bool_false},
             approved_by TEXT,
-            approval_timestamp TEXT,
+            approval_timestamp {timestamp_type},
             metadata TEXT,
-            created_at TEXT NOT NULL,
+            created_at {timestamp_type} DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (target_id) REFERENCES attribution_target(id)
         );
         """)
 
-        # Attribution rules (configuration for calculation)
-        self.run_sql("""
+        self.run_sql(f"""
         CREATE TABLE IF NOT EXISTS attribution_rule (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id {pk_auto},
             name TEXT NOT NULL,
             model_type TEXT NOT NULL,
             config TEXT NOT NULL,
             applies_to TEXT,
             priority INTEGER DEFAULT 100,
             split_constraint TEXT DEFAULT 'must_sum_to_100',
-            active INTEGER DEFAULT 1,
-            created_at TEXT NOT NULL,
+            active {bool_type} DEFAULT {bool_true},
+            created_at {timestamp_type} DEFAULT CURRENT_TIMESTAMP,
             created_by TEXT
         );
         """)
 
-        # Ledger entries (attribution results)
-        self.run_sql("""
+        self.run_sql(f"""
         CREATE TABLE IF NOT EXISTS ledger_entry (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id {pk_auto},
             target_id INTEGER NOT NULL,
             partner_id TEXT NOT NULL,
             attributed_value REAL NOT NULL,
             split_percentage REAL NOT NULL,
-            attribution_percentage REAL NOT NULL DEFAULT 0,
+            attribution_percentage REAL DEFAULT 0,
+            role TEXT,
             rule_id INTEGER NOT NULL,
-            calculation_timestamp TEXT NOT NULL,
+            calculation_timestamp {timestamp_type} DEFAULT CURRENT_TIMESTAMP,
+            timestamp {timestamp_type} DEFAULT CURRENT_TIMESTAMP,
+            metadata TEXT,
             override_by TEXT,
             audit_trail TEXT,
-            metadata TEXT,
             FOREIGN KEY (target_id) REFERENCES attribution_target(id),
             FOREIGN KEY (rule_id) REFERENCES attribution_rule(id)
         );
         """)
 
-        # Measurement workflows (NEW - Phase 1.5)
-        self.run_sql("""
+        self.run_sql(f"""
         CREATE TABLE IF NOT EXISTS measurement_workflow (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id {pk_auto},
             company_id TEXT NOT NULL,
             name TEXT NOT NULL,
             description TEXT,
@@ -291,45 +396,57 @@ class Database:
             conflict_resolution TEXT DEFAULT 'priority',
             fallback_strategy TEXT DEFAULT 'next_priority',
             applies_to TEXT,
-            is_primary INTEGER DEFAULT 0,
-            active INTEGER DEFAULT 1,
-            created_at TEXT NOT NULL,
+            is_primary {bool_type} DEFAULT {bool_false},
+            active {bool_type} DEFAULT {bool_true},
+            created_at {timestamp_type} DEFAULT CURRENT_TIMESTAMP,
             created_by TEXT
         );
         """)
 
-        # Attribution periods (NEW - Phase 2.0)
-        self.run_sql("""
+        self.run_sql(f"""
         CREATE TABLE IF NOT EXISTS attribution_period (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id {pk_auto},
             organization_id TEXT NOT NULL,
             name TEXT NOT NULL,
             period_type TEXT NOT NULL,
-            start_date TEXT NOT NULL,
-            end_date TEXT NOT NULL,
+            start_date {timestamp_type} NOT NULL,
+            end_date {timestamp_type} NOT NULL,
             status TEXT NOT NULL DEFAULT 'open',
-            closed_at TEXT,
+            closed_at {timestamp_type},
             closed_by TEXT,
-            locked_at TEXT,
+            locked_at {timestamp_type},
             locked_by TEXT,
             total_revenue REAL DEFAULT 0.0,
             total_deals INTEGER DEFAULT 0,
             total_partners INTEGER DEFAULT 0,
-            created_at TEXT NOT NULL,
+            created_at {timestamp_type} DEFAULT CURRENT_TIMESTAMP,
             created_by TEXT,
             notes TEXT
         );
         """)
 
-        # Indexes for performance
-        self.run_sql("CREATE INDEX IF NOT EXISTS idx_touchpoint_target ON partner_touchpoint(target_id);")
-        self.run_sql("CREATE INDEX IF NOT EXISTS idx_touchpoint_partner ON partner_touchpoint(partner_id);")
-        self.run_sql("CREATE INDEX IF NOT EXISTS idx_touchpoint_source ON partner_touchpoint(source);")
-        self.run_sql("CREATE INDEX IF NOT EXISTS idx_ledger_target ON ledger_entry(target_id);")
-        self.run_sql("CREATE INDEX IF NOT EXISTS idx_ledger_partner ON ledger_entry(partner_id);")
-        self.run_sql("CREATE INDEX IF NOT EXISTS idx_workflow_company ON measurement_workflow(company_id);")
-        self.run_sql("CREATE INDEX IF NOT EXISTS idx_period_org ON attribution_period(organization_id);")
-        self.run_sql("CREATE INDEX IF NOT EXISTS idx_period_dates ON attribution_period(start_date, end_date);")
+        # ====================================================================
+        # Indexes
+        # ====================================================================
+
+        indexes = [
+            "CREATE INDEX IF NOT EXISTS idx_touchpoint_target ON partner_touchpoint(target_id);",
+            "CREATE INDEX IF NOT EXISTS idx_touchpoint_partner ON partner_touchpoint(partner_id);",
+            "CREATE INDEX IF NOT EXISTS idx_touchpoint_source ON partner_touchpoint(source);",
+            "CREATE INDEX IF NOT EXISTS idx_ledger_target ON ledger_entry(target_id);",
+            "CREATE INDEX IF NOT EXISTS idx_ledger_partner ON ledger_entry(partner_id);",
+            "CREATE INDEX IF NOT EXISTS idx_workflow_company ON measurement_workflow(company_id);",
+            "CREATE INDEX IF NOT EXISTS idx_period_org ON attribution_period(organization_id);",
+            "CREATE INDEX IF NOT EXISTS idx_period_dates ON attribution_period(start_date, end_date);",
+            "CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);",
+            "CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);",
+        ]
+
+        for idx_sql in indexes:
+            try:
+                self.run_sql(idx_sql)
+            except Exception as e:
+                logger.warning(f"Index creation warning: {e}")
 
         # Apply migrations
         self._apply_migrations()
@@ -345,82 +462,65 @@ class Database:
     def _apply_migrations(self) -> None:
         """Apply lightweight migrations for existing DB files."""
         def ensure_column(table: str, column: str, definition: str):
-            cols = self.read_sql(f"PRAGMA table_info({table});")["name"].tolist()
-            if column not in cols:
-                logger.info(f"Adding column {column} to table {table}")
-                self.run_sql(f"ALTER TABLE {table} ADD COLUMN {definition};")
+            try:
+                if self._is_postgres:
+                    # PostgreSQL syntax
+                    self.run_sql(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {definition}")
+                else:
+                    # SQLite: check if column exists first
+                    cols = self.read_sql(f"PRAGMA table_info({table});")["name"].tolist()
+                    if column not in cols:
+                        logger.info(f"Adding column {column} to table {table}")
+                        self.run_sql(f"ALTER TABLE {table} ADD COLUMN {definition};")
+            except Exception as e:
+                logger.debug(f"Migration skipped for {table}.{column}: {e}")
 
         # Legacy system migrations
         ensure_column("use_cases", "stage", "stage TEXT")
         ensure_column("use_cases", "estimated_value", "estimated_value REAL")
         ensure_column("use_cases", "target_close_date", "target_close_date TEXT")
         ensure_column("use_cases", "tag_source", "tag_source TEXT DEFAULT 'app'")
-        ensure_column("account_partners", "source", "source TEXT NOT NULL DEFAULT 'auto'")
-        ensure_column("settings", "setting_value", "setting_value TEXT NOT NULL")
+        ensure_column("account_partners", "source", "source TEXT DEFAULT 'auto'")
+        ensure_column("ledger_entry", "role", "role TEXT")
 
         # Backfill tag_source if missing
-        self.run_sql("UPDATE use_cases SET tag_source = 'app' WHERE tag_source IS NULL OR tag_source = '';")
+        try:
+            self.run_sql("UPDATE use_cases SET tag_source = 'app' WHERE tag_source IS NULL OR tag_source = '';")
+        except Exception:
+            pass
 
-        # ====================================================================
-        # Universal Attribution System Migrations (Phase 1.3)
-        # ====================================================================
-
-        # Add new source tracking fields to partner_touchpoint
-        ensure_column("partner_touchpoint", "source", "source TEXT NOT NULL DEFAULT 'touchpoint_tracking'")
+        # Universal Attribution System Migrations
+        ensure_column("partner_touchpoint", "source", "source TEXT DEFAULT 'touchpoint_tracking'")
         ensure_column("partner_touchpoint", "source_id", "source_id TEXT")
         ensure_column("partner_touchpoint", "source_confidence", "source_confidence REAL DEFAULT 1.0")
-
-        # Add deal registration fields
         ensure_column("partner_touchpoint", "deal_reg_status", "deal_reg_status TEXT")
         ensure_column("partner_touchpoint", "deal_reg_submitted_date", "deal_reg_submitted_date TEXT")
         ensure_column("partner_touchpoint", "deal_reg_approved_date", "deal_reg_approved_date TEXT")
-
-        # Add approval workflow fields
         ensure_column("partner_touchpoint", "requires_approval", "requires_approval INTEGER DEFAULT 0")
         ensure_column("partner_touchpoint", "approved_by", "approved_by TEXT")
         ensure_column("partner_touchpoint", "approval_timestamp", "approval_timestamp TEXT")
-
-        # Backfill source field for existing touchpoints (backward compatibility)
-        try:
-            # Check if partner_touchpoint table exists and has records
-            existing_touchpoints = self.read_sql("SELECT COUNT(*) as count FROM partner_touchpoint WHERE source IS NULL OR source = '';")
-            if not existing_touchpoints.empty and existing_touchpoints.loc[0, "count"] > 0:
-                logger.info("Backfilling source field for existing partner touchpoints")
-                self.run_sql("""
-                    UPDATE partner_touchpoint
-                    SET source = CASE
-                        WHEN touchpoint_type = 'manual_override' THEN 'manual_override'
-                        ELSE 'touchpoint_tracking'
-                    END
-                    WHERE source IS NULL OR source = '';
-                """)
-                # Set default source_confidence for existing records
-                self.run_sql("UPDATE partner_touchpoint SET source_confidence = 1.0 WHERE source_confidence IS NULL;")
-        except Exception as e:
-            # Table might not exist yet (fresh install)
-            logger.debug(f"Skipping partner_touchpoint backfill: {e}")
-
-        # Add missing columns to attribution_target
         ensure_column("attribution_target", "name", "name TEXT")
-
-        # Add missing columns to ledger_entry
-        ensure_column("ledger_entry", "attribution_percentage", "attribution_percentage REAL NOT NULL DEFAULT 0")
+        ensure_column("ledger_entry", "attribution_percentage", "attribution_percentage REAL DEFAULT 0")
         ensure_column("ledger_entry", "metadata", "metadata TEXT")
+        ensure_column("attribution_rule", "priority", "priority INTEGER DEFAULT 100")
 
     def _migrate_legacy_rules(self) -> None:
         """Migrate old rule_engine_rules key to account_rules."""
-        existing = self.read_sql("SELECT setting_key, setting_value FROM settings WHERE setting_key = 'rule_engine_rules';")
-        if not existing.empty:
-            val = existing.loc[0, "setting_value"]
-            # Only migrate if account_rules not already set
-            if self.read_sql("SELECT setting_key FROM settings WHERE setting_key = 'account_rules';").empty:
-                logger.info("Migrating legacy rules to account_rules")
-                self.set_setting("account_rules", val)
+        try:
+            existing = self.read_sql("SELECT setting_key, setting_value FROM settings WHERE setting_key = 'rule_engine_rules';")
+            if not existing.empty:
+                val = existing.loc[0, "setting_value"]
+                if self.read_sql("SELECT setting_key FROM settings WHERE setting_key = 'account_rules';").empty:
+                    logger.info("Migrating legacy rules to account_rules")
+                    self.set_setting("account_rules", val)
+        except Exception as e:
+            logger.debug(f"Legacy rule migration skipped: {e}")
 
     def _ensure_default_settings(self) -> None:
         """Ensure all default settings exist in the database."""
-        # Add account_rules default
-        DEFAULT_SETTINGS["account_rules"] = json.dumps([
+        settings_copy = dict(DEFAULT_SETTINGS)
+
+        settings_copy["account_rules"] = json.dumps([
             {
                 "name": "Block SI below 50k estimated",
                 "action": "deny",
@@ -433,8 +533,7 @@ class Database:
             }
         ], indent=2)
 
-        # Add use_case_rules default
-        DEFAULT_SETTINGS["use_case_rules"] = json.dumps([
+        settings_copy["use_case_rules"] = json.dumps([
             {
                 "name": "Allow all use cases",
                 "action": "allow",
@@ -442,22 +541,28 @@ class Database:
             }
         ], indent=2)
 
-        existing_settings = self.read_sql("SELECT setting_key FROM settings;")
-        for key, val in DEFAULT_SETTINGS.items():
-            if key not in existing_settings["setting_key"].tolist():
-                logger.info(f"Adding default setting: {key}")
-                self.run_sql("INSERT INTO settings(setting_key, setting_value) VALUES (?, ?);", (key, val))
+        try:
+            existing_settings = self.read_sql("SELECT setting_key FROM settings;")
+            existing_keys = existing_settings["setting_key"].tolist() if not existing_settings.empty else []
+            for key, val in settings_copy.items():
+                if key not in existing_keys:
+                    logger.info(f"Adding default setting: {key}")
+                    self.run_sql("INSERT INTO settings(setting_key, setting_value) VALUES (?, ?);", (key, val))
+        except Exception as e:
+            logger.debug(f"Default settings check skipped: {e}")
 
     def seed_data_if_empty(self) -> None:
         """Seed demo data if database is empty."""
-        existing = self.read_sql("SELECT COUNT(*) as c FROM accounts;")
-        if int(existing.loc[0, "c"]) > 0:
-            logger.info("Database already has data, skipping seed")
-            return
+        try:
+            existing = self.read_sql("SELECT COUNT(*) as c FROM accounts;")
+            if int(existing.loc[0, "c"]) > 0:
+                logger.info("Database already has data, skipping seed")
+                return
+        except Exception:
+            pass
 
         logger.info("Seeding demo data...")
 
-        # Seed accounts
         accounts = [
             ("A1", "Acme Corp"),
             ("A2", "Bluebird Health"),
@@ -468,7 +573,6 @@ class Database:
         for a in accounts:
             self.run_sql("INSERT INTO accounts(account_id, account_name) VALUES (?, ?);", a)
 
-        # Seed partners
         partners = [
             ("P1", "Titan SI"),
             ("P2", "Northwind Consulting"),
@@ -477,7 +581,6 @@ class Database:
         for p in partners:
             self.run_sql("INSERT INTO partners(partner_id, partner_name) VALUES (?, ?);", p)
 
-        # Helper for sample estimated values
         def sample_estimated():
             if random.random() < 0.8:
                 val = random.triangular(2000, 12000, 4500)
@@ -486,7 +589,6 @@ class Database:
             val = max(2000, min(100000, val))
             return int(round(val / 1000.0) * 1000)
 
-        # Seed use cases
         use_case_specs = [
             ("UC1", "A1", "Lakehouse Migration", "Discovery", (date.today() + timedelta(days=45)).isoformat()),
             ("UC2", "A1", "GenAI Support Bot", "Evaluation", (date.today() + timedelta(days=25)).isoformat()),
@@ -502,7 +604,6 @@ class Database:
             VALUES (?, ?, ?, ?, ?, ?, ?);
             """, uc)
 
-        # Seed revenue events (last 60 days)
         start = date.today() - timedelta(days=60)
         daily = [("A1", 500), ("A2", 250), ("A3", 180), ("A4", 220), ("A5", 300)]
         for i in range(61):
@@ -513,16 +614,17 @@ class Database:
                     (d.isoformat(), account_id, float(base))
                 )
 
-        # Seed activities
         self._seed_activities_if_empty()
-
         logger.info("Demo data seeding complete")
 
     def _seed_activities_if_empty(self) -> None:
         """Seed sample activities if empty."""
-        existing = self.read_sql("SELECT COUNT(*) as c FROM activities;")
-        if not existing.empty and int(existing.loc[0, "c"]) > 0:
-            return
+        try:
+            existing = self.read_sql("SELECT COUNT(*) as c FROM activities;")
+            if not existing.empty and int(existing.loc[0, "c"]) > 0:
+                return
+        except Exception:
+            pass
 
         sample_activities = [
             ("A1", "P1", "Workshop", (date.today() - timedelta(days=20)).isoformat(), "Data platform workshop with SI."),
@@ -548,13 +650,21 @@ class Database:
 
     def set_setting(self, key: str, value: str) -> None:
         """Set a setting value."""
-        self.run_sql("""
-        INSERT INTO settings(setting_key, setting_value)
-        VALUES (?, ?)
-        ON CONFLICT(setting_key)
-        DO UPDATE SET setting_value = excluded.setting_value;
-        """, (key, value))
-        logger.info(f"Setting {key} = {value}")
+        if self._is_postgres:
+            self.run_sql("""
+            INSERT INTO settings(setting_key, setting_value)
+            VALUES (?, ?)
+            ON CONFLICT(setting_key)
+            DO UPDATE SET setting_value = EXCLUDED.setting_value;
+            """, (key, value))
+        else:
+            self.run_sql("""
+            INSERT INTO settings(setting_key, setting_value)
+            VALUES (?, ?)
+            ON CONFLICT(setting_key)
+            DO UPDATE SET setting_value = excluded.setting_value;
+            """, (key, value))
+        logger.debug(f"Setting {key} updated")
 
     def get_setting_bool(self, key: str, default: bool) -> bool:
         """Get a boolean setting value."""
@@ -578,7 +688,6 @@ class Database:
         metadata: Optional[dict] = None
     ) -> None:
         """Log an audit event."""
-        from datetime import datetime
         audit_id = str(uuid.uuid4())
         timestamp = datetime.utcnow().isoformat()
         metadata_json = json.dumps(metadata) if metadata else None
@@ -593,7 +702,15 @@ class Database:
     def reset_demo(self) -> None:
         """Reset demo database."""
         logger.warning("Resetting demo database...")
-        if os.path.exists(self.db_path):
+        if not self._is_postgres and os.path.exists(self.db_path):
             os.remove(self.db_path)
         self.init_db()
         self.seed_data_if_empty()
+
+    def close(self) -> None:
+        """Close database connection."""
+        if self._conn:
+            self._conn.close()
+            self._conn = None
+            self._adapter = None
+            logger.info("Database connection closed")

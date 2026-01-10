@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import List, Optional, Dict, Any
 from dataclasses import asdict
 
-from models_new import (
+from models import (
     AttributionTarget,
     PartnerTouchpoint,
     AttributionRule,
@@ -741,7 +741,7 @@ class AttributionRepository:
 
     def create_period(self, period: 'AttributionPeriod') -> int:
         """Create a new attribution period and return its ID."""
-        from models_new import AttributionPeriod, PeriodType, PeriodStatus
+        from models import AttributionPeriod, PeriodType, PeriodStatus
 
         cursor = self.conn.cursor()
         cursor.execute("""
@@ -775,7 +775,7 @@ class AttributionRepository:
 
     def get_period(self, period_id: int) -> Optional['AttributionPeriod']:
         """Get a period by ID."""
-        from models_new import AttributionPeriod, PeriodType, PeriodStatus
+        from models import AttributionPeriod, PeriodType, PeriodStatus
 
         cursor = self.conn.cursor()
         cursor.execute("SELECT * FROM attribution_period WHERE id = ?", (period_id,))
@@ -806,7 +806,7 @@ class AttributionRepository:
 
     def get_all_periods(self, organization_id: str) -> List['AttributionPeriod']:
         """Get all periods for an organization."""
-        from models_new import AttributionPeriod, PeriodType, PeriodStatus
+        from models import AttributionPeriod, PeriodType, PeriodStatus
 
         cursor = self.conn.cursor()
         cursor.execute("""
@@ -842,7 +842,7 @@ class AttributionRepository:
 
     def get_current_period(self, organization_id: str) -> Optional['AttributionPeriod']:
         """Get the current open period for an organization."""
-        from models_new import AttributionPeriod, PeriodType, PeriodStatus
+        from models import AttributionPeriod, PeriodType, PeriodStatus
 
         cursor = self.conn.cursor()
         cursor.execute("""

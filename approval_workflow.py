@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 import plotly.graph_objects as go
 
-from models_new import PartnerTouchpoint, AttributionTarget, DataSource, TouchpointType
+from models import PartnerTouchpoint, AttributionTarget, DataSource, TouchpointType
 from session_manager import SessionManager
 
 

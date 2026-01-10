@@ -14,7 +14,7 @@ Creates:
 from datetime import datetime, timedelta
 import random
 from typing import List, Tuple
-from models_new import (
+from models import (
     AttributionTarget, PartnerTouchpoint, AttributionRule, LedgerEntry,
     TargetType, TouchpointType, AttributionModel, SplitConstraint
 )

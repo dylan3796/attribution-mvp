@@ -12,7 +12,7 @@ Tests the multi-source attribution workflow system including:
 
 import pytest
 from datetime import datetime, timedelta
-from models_new import (
+from models import (
     AttributionTarget,
     PartnerTouchpoint,
     AttributionRule,

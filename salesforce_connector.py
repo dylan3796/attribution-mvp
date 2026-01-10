@@ -22,7 +22,7 @@ from simple_salesforce import Salesforce, SalesforceLogin
 from simple_salesforce.exceptions import SalesforceAuthenticationFailed
 import requests
 
-from models_new import (
+from models import (
     AttributionTarget, PartnerTouchpoint,
     TargetType, TouchpointType, DataSource
 )

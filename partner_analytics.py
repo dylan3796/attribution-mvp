@@ -17,7 +17,7 @@ from typing import List, Dict, Optional, Any, Tuple
 from dataclasses import dataclass
 import statistics
 
-from models_new import AttributionTarget, PartnerTouchpoint, LedgerEntry
+from models import AttributionTarget, PartnerTouchpoint, LedgerEntry
 
 
 # ============================================================================

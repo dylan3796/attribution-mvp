@@ -15,7 +15,7 @@ That's the caller's responsibility (separation of concerns).
 import math
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
-from models_new import (
+from models import (
     AttributionTarget,
     PartnerTouchpoint,
     AttributionRule,

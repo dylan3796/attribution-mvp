@@ -11,7 +11,7 @@ from typing import List, Optional
 from datetime import datetime
 
 from repository import AttributionRepository
-from models_new import (
+from models import (
     AttributionTarget,
     PartnerTouchpoint,
     AttributionRule,
