@@ -248,29 +248,17 @@ class Database:
         logger.info("✅ Database schema initialized successfully")
 
     def _run_migrations(self):
-        """Run database migrations for existing databases."""
-        migrations = [
-            # Add priority column to attribution_rule if it doesn't exist
-            ("attribution_rule", "priority", "ALTER TABLE attribution_rule ADD COLUMN priority INTEGER DEFAULT 0"),
-        ]
-
-        for table, column, sql in migrations:
-            try:
-                # Check if column exists by querying table info
-                cursor = self.adapter.execute(f"PRAGMA table_info({table})")
-                columns = [row[1] for row in cursor.fetchall()]
-                if column not in columns:
-                    self.run_sql(sql)
-                    logger.info(f"Migration: Added {column} to {table}")
-            except Exception as e:
-                # PostgreSQL uses different syntax
-                if self.is_postgres:
-                    try:
-                        self.run_sql(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} INTEGER DEFAULT 0")
-                    except Exception as pg_e:
-                        logger.warning(f"Migration warning: {pg_e}")
-                else:
-                    logger.warning(f"Migration warning: {e}")
+        """Add missing columns to existing databases."""
+        try:
+            if self.is_postgres:
+                self.run_sql("ALTER TABLE attribution_rule ADD COLUMN IF NOT EXISTS priority INTEGER DEFAULT 0")
+            else:
+                # SQLite: check if column exists first
+                cursor = self.adapter.execute("PRAGMA table_info(attribution_rule)")
+                if "priority" not in [row[1] for row in cursor.fetchall()]:
+                    self.run_sql("ALTER TABLE attribution_rule ADD COLUMN priority INTEGER DEFAULT 0")
+        except Exception as e:
+            logger.warning(f"Migration skipped: {e}")
 
     def _create_indexes(self):
         """Create indexes for performance."""
