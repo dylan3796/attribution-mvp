@@ -656,7 +656,7 @@ with tabs[0]:
 
         if st.button("🎲 Load Demo Data", key="demo_dashboard"):
             with st.spinner("Generating demo data..."):
-                targets, touchpoints, rules = generate_complete_demo_data()
+                targets, touchpoints, rules, _ = generate_complete_demo_data()
                 for t in targets:
                     st.session_state.session_manager.add_target(t)
                 for tp in touchpoints:
@@ -1122,7 +1122,7 @@ with tabs[4]:
             st.caption("Load sample data for testing")
             if st.button("🎲 Load Demo Data"):
                 with st.spinner("Generating demo data..."):
-                    targets, touchpoints, rules = generate_complete_demo_data()
+                    targets, touchpoints, rules, _ = generate_complete_demo_data()
                     for t in targets:
                         st.session_state.session_manager.add_target(t)
                     for tp in touchpoints:
