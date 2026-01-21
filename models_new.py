@@ -262,12 +262,15 @@ class Touchpoint:
     - actor_id is generic (partner_id, campaign_id, rep_id, etc.)
     - Supports multi-channel attribution (marketing + partners + sales)
     """
+    # Required fields (no defaults) must come first
     id: int
     actor_type: ActorType                   # What kind of actor (partner, campaign, sales_rep, etc.)
     actor_id: str                           # Reference to the actor (partner_id, campaign_id, etc.)
-    actor_name: Optional[str] = None        # Display name for the actor
     target_id: int                          # FK to AttributionTarget
     touchpoint_type: TouchpointType         # How involvement is evidenced
+
+    # Optional fields (with defaults) come after
+    actor_name: Optional[str] = None        # Display name for the actor
     role: Optional[str] = None              # Role/category within actor type (e.g., "SI" for partner)
     weight: float = 1.0                     # For activity-weighted attribution
     timestamp: Optional[datetime] = None    # When the touch occurred
