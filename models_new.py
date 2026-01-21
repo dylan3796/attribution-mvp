@@ -37,6 +37,28 @@ class TargetType(str, Enum):
     CUSTOM = "custom"                    # User-defined target type
 
 
+class RevenueType(str, Enum):
+    """Classification of revenue for attribution purposes"""
+    NEW_LOGO = "new_logo"                # First contract with a customer
+    EXPANSION = "expansion"              # Upsells, cross-sells
+    RENEWAL = "renewal"                  # Retention/renewal revenue
+    SERVICES = "services"                # One-time professional services
+    CONSUMPTION = "consumption"          # Usage-based/metered billing
+    CUSTOM = "custom"                    # User-defined revenue type
+
+
+class ActorType(str, Enum):
+    """Types of actors that can receive attribution credit"""
+    PARTNER = "partner"                  # External partner (SI, ISV, Referral, etc.)
+    CAMPAIGN = "campaign"                # Marketing campaign
+    SALES_REP = "sales_rep"              # Internal sales representative
+    CHANNEL = "channel"                  # Distribution channel
+    CUSTOMER_REFERRAL = "customer_referral"  # Existing customer referral
+    EVENT = "event"                      # Events, webinars, conferences
+    CONTENT = "content"                  # Content marketing (ebook, blog, etc.)
+    CUSTOM = "custom"                    # User-defined actor type
+
+
 class TouchpointType(str, Enum):
     """How partner involvement is evidenced"""
     # Existing types (backward compatible)
@@ -125,12 +147,23 @@ class AttributionTarget:
     - Databricks consumption event
     - Snowflake usage data
     - Custom business events
+
+    Enhanced with revenue type classification for different attribution logic:
+    - New Logo: First contract with a customer
+    - Expansion: Upsells, cross-sells
+    - Renewal: Retention revenue
+    - Services: Professional services (one-time)
+    - Consumption: Usage-based/metered billing
     """
     id: int
     type: TargetType
     external_id: str                    # SOR's ID (e.g., Salesforce Opp ID)
     value: float                        # $ amount to attribute
     timestamp: datetime                 # When the value was created/closed
+    name: Optional[str] = None          # Display name for the target
+    revenue_type: Optional[RevenueType] = None  # Classification for attribution rules
+    account_id: Optional[str] = None    # Account this target belongs to
+    account_name: Optional[str] = None  # Account display name
     metadata: Dict[str, Any] = field(default_factory=dict)  # SOR-specific fields (stage, account_id, etc.)
     created_at: datetime = field(default_factory=datetime.now)
 
@@ -141,6 +174,10 @@ class AttributionTarget:
             "external_id": self.external_id,
             "value": self.value,
             "timestamp": self.timestamp.isoformat(),
+            "name": self.name,
+            "revenue_type": self.revenue_type.value if self.revenue_type else None,
+            "account_id": self.account_id,
+            "account_name": self.account_name,
             "metadata": json.dumps(self.metadata),
             "created_at": self.created_at.isoformat()
         }
@@ -207,6 +244,64 @@ class PartnerTouchpoint:
             "approved_by": self.approved_by,
             "approval_timestamp": self.approval_timestamp.isoformat() if self.approval_timestamp else None,
             # Existing fields
+            "metadata": json.dumps(self.metadata),
+            "created_at": self.created_at.isoformat()
+        }
+
+
+@dataclass
+class Touchpoint:
+    """
+    Universal touchpoint - evidence of ANY actor's involvement with a target.
+
+    This is the generalized version of PartnerTouchpoint that supports
+    attribution to any actor type: partners, campaigns, sales reps, channels, etc.
+
+    Key differences from PartnerTouchpoint:
+    - actor_type field to distinguish between different contributor types
+    - actor_id is generic (partner_id, campaign_id, rep_id, etc.)
+    - Supports multi-channel attribution (marketing + partners + sales)
+    """
+    id: int
+    actor_type: ActorType                   # What kind of actor (partner, campaign, sales_rep, etc.)
+    actor_id: str                           # Reference to the actor (partner_id, campaign_id, etc.)
+    actor_name: Optional[str] = None        # Display name for the actor
+    target_id: int                          # FK to AttributionTarget
+    touchpoint_type: TouchpointType         # How involvement is evidenced
+    role: Optional[str] = None              # Role/category within actor type (e.g., "SI" for partner)
+    weight: float = 1.0                     # For activity-weighted attribution
+    timestamp: Optional[datetime] = None    # When the touch occurred
+
+    # Source tracking
+    source: DataSource = DataSource.TOUCHPOINT_TRACKING
+    source_id: Optional[str] = None
+    source_confidence: float = 1.0
+
+    # Approval workflow
+    requires_approval: bool = False
+    approved_by: Optional[str] = None
+    approval_timestamp: Optional[datetime] = None
+
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    created_at: datetime = field(default_factory=datetime.now)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "actor_type": self.actor_type.value,
+            "actor_id": self.actor_id,
+            "actor_name": self.actor_name,
+            "target_id": self.target_id,
+            "touchpoint_type": self.touchpoint_type.value,
+            "role": self.role,
+            "weight": self.weight,
+            "timestamp": self.timestamp.isoformat() if self.timestamp else None,
+            "source": self.source.value,
+            "source_id": self.source_id,
+            "source_confidence": self.source_confidence,
+            "requires_approval": self.requires_approval,
+            "approved_by": self.approved_by,
+            "approval_timestamp": self.approval_timestamp.isoformat() if self.approval_timestamp else None,
             "metadata": json.dumps(self.metadata),
             "created_at": self.created_at.isoformat()
         }

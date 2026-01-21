@@ -32,7 +32,9 @@ warnings.filterwarnings('ignore', message='.*label.*got an empty value.*')
 from models_new import (
     AttributionTarget, PartnerTouchpoint, AttributionRule, LedgerEntry,
     TargetType, TouchpointType, AttributionModel, SplitConstraint,
-    DEFAULT_PARTNER_ROLES, SCHEMA_VERSION
+    DEFAULT_PARTNER_ROLES, SCHEMA_VERSION,
+    # NEW: Universal attribution types
+    ActorType, RevenueType, Touchpoint
 )
 from attribution_engine import AttributionEngine, select_rule_for_target
 from data_ingestion import ingest_csv, generate_csv_template, SchemaDetector
@@ -47,7 +49,14 @@ from dashboards import (
     create_attribution_pie_chart,
     create_deal_value_distribution,
     create_partner_role_distribution,
-    create_attribution_waterfall
+    create_attribution_waterfall,
+    # NEW: Revenue Relationships dashboard
+    create_revenue_by_actor_type_chart,
+    create_revenue_by_type_chart,
+    create_actor_contribution_trend,
+    create_revenue_relationship_sankey,
+    create_top_contributors_table,
+    create_revenue_type_comparison_chart
 )
 from exports import export_to_csv, export_to_excel, generate_pdf_report, generate_partner_statement_pdf, generate_bulk_partner_statements
 from pdf_executive_report import generate_executive_report
@@ -520,21 +529,22 @@ with st.sidebar:
 tabs = st.tabs([
     # 🎯 OPERATIONAL VIEWS (Daily Use)
     "📊 Executive Dashboard",      # Tab 0: C-suite overview
-    "💼 Partner Sales",            # Tab 1: Partner performance & revenue
-    "🤝 Partner Management",       # Tab 2: Partner health & alerts
-    "💰 Deal Drilldown",           # Tab 3: Dispute resolution
-    "📋 Approval Queue",           # Tab 4: Partner touchpoint approvals
+    "🔀 Revenue Relationships",    # Tab 1: Multi-actor attribution view (NEW)
+    "💼 Partner Sales",            # Tab 2: Partner performance & revenue
+    "🤝 Partner Management",       # Tab 3: Partner health & alerts
+    "💰 Deal Drilldown",           # Tab 4: Dispute resolution
+    "📋 Approval Queue",           # Tab 5: Partner touchpoint approvals
 
     # ⚙️ SETUP & CONFIGURATION (Admin - Ordered by ease of use)
-    "📥 Data Import",              # Tab 5: Upload data (first step)
-    "🔗 Salesforce Integration",   # Tab 6: Connect Salesforce & segment modes
-    "🎨 Rule Builder",             # Tab 7: Visual rule creator (easy, no-code)
-    "📋 Rules & Templates",        # Tab 8: Manage existing rules
-    "🔄 Measurement Workflows",    # Tab 9: Advanced attribution methods
+    "📥 Data Import",              # Tab 6: Upload data (first step)
+    "🔗 Salesforce Integration",   # Tab 7: Connect Salesforce & segment modes
+    "🎨 Rule Builder",             # Tab 8: Visual rule creator (easy, no-code)
+    "📋 Rules & Templates",        # Tab 9: Manage existing rules
+    "🔄 Measurement Workflows",    # Tab 10: Advanced attribution methods
 
     # 🔍 ADVANCED (Audit & Deep Dive)
-    "📅 Period Management",        # Tab 10: Close/lock attribution periods
-    "🔍 Ledger Explorer"           # Tab 11: Immutable audit trail
+    "📅 Period Management",        # Tab 11: Close/lock attribution periods
+    "🔍 Ledger Explorer"           # Tab 12: Immutable audit trail
 ])
 
 
@@ -950,10 +960,134 @@ with tabs[0]:
 
 
 # ============================================================================
-# TAB 1: PARTNER SALES DASHBOARD (NEW)
+# TAB 1: REVENUE RELATIONSHIPS DASHBOARD (NEW - Universal Attribution)
 # ============================================================================
 
 with tabs[1]:
+    st.title("🔀 Revenue Relationships")
+    st.caption("See how all contributors (partners, campaigns, sales, channels) relate to your revenue")
+
+    # Check if we have universal touchpoint data
+    touchpoints_df = sm.read_sql("SELECT * FROM touchpoint") if sm else pd.DataFrame()
+    targets_df = sm.read_sql("SELECT * FROM attribution_target") if sm else pd.DataFrame()
+    ledger_df = sm.read_sql("SELECT * FROM ledger_entry") if sm else pd.DataFrame()
+
+    # If no universal touchpoint data, show migration guidance
+    if touchpoints_df.empty:
+        st.info("""
+        **Welcome to the Revenue Relationships Dashboard!**
+
+        This dashboard shows attribution across ALL contributor types:
+        - 🤝 **Partners** (SI, ISV, Referral, Influence)
+        - 📣 **Campaigns** (Marketing campaigns, content, events)
+        - 👔 **Sales Reps** (Direct sales credit)
+        - 🔗 **Channels** (Distribution channels)
+        - ⭐ **Customer Referrals** (Existing customer referrals)
+
+        **To get started:**
+        1. Import data via the **Data Import** tab
+        2. Or connect your Salesforce via the **Salesforce Integration** tab
+        3. Configure attribution rules in the **Rule Builder** tab
+
+        The universal touchpoint model allows you to measure attribution across
+        all these contributor types with different rules per revenue type
+        (New Logo, Expansion, Renewal, Services, Consumption).
+        """)
+
+        # Show demo/fallback with partner touchpoints if available
+        partner_touchpoints = sm.read_sql("SELECT * FROM partner_touchpoint") if sm else pd.DataFrame()
+        if not partner_touchpoints.empty and not ledger_df.empty:
+            st.markdown("---")
+            st.subheader("📊 Current Partner Attribution (Legacy View)")
+
+            # Convert partner touchpoints to universal format for display
+            partner_touchpoints['actor_type'] = 'partner'
+            partner_touchpoints['actor_id'] = partner_touchpoints['partner_id']
+            partner_touchpoints['actor_name'] = partner_touchpoints['partner_id']  # Will be enriched from partners table
+
+            col1, col2 = st.columns(2)
+            with col1:
+                fig = create_revenue_by_actor_type_chart(partner_touchpoints, ledger_df)
+                st.plotly_chart(fig, use_container_width=True)
+            with col2:
+                fig = create_revenue_by_type_chart(targets_df)
+                st.plotly_chart(fig, use_container_width=True)
+    else:
+        # Full universal touchpoint view
+        st.markdown("---")
+
+        # KPI Row
+        col1, col2, col3, col4 = st.columns(4)
+
+        total_attributed = ledger_df['attributed_value'].sum() if not ledger_df.empty else 0
+        total_targets = len(targets_df) if not targets_df.empty else 0
+        actor_types_count = touchpoints_df['actor_type'].nunique() if not touchpoints_df.empty else 0
+        unique_actors = touchpoints_df['actor_id'].nunique() if not touchpoints_df.empty else 0
+
+        with col1:
+            st.metric("Total Attributed Revenue", f"${total_attributed:,.0f}")
+        with col2:
+            st.metric("Attribution Targets", f"{total_targets:,}")
+        with col3:
+            st.metric("Contributor Types", f"{actor_types_count}")
+        with col4:
+            st.metric("Unique Contributors", f"{unique_actors:,}")
+
+        st.markdown("---")
+
+        # Main visualizations
+        tab_views = st.tabs(["📊 By Contributor", "💰 By Revenue Type", "📈 Trends", "🔀 Flow"])
+
+        with tab_views[0]:
+            col1, col2 = st.columns(2)
+            with col1:
+                fig = create_revenue_by_actor_type_chart(touchpoints_df, ledger_df)
+                st.plotly_chart(fig, use_container_width=True)
+            with col2:
+                # Top contributors table
+                st.subheader("🏆 Top Contributors")
+                top_df = create_top_contributors_table(touchpoints_df, ledger_df, limit=10)
+                if not top_df.empty:
+                    top_df['Attributed Revenue'] = top_df['Attributed Revenue'].apply(lambda x: f"${x:,.0f}")
+                    st.dataframe(top_df, use_container_width=True, hide_index=True)
+                else:
+                    st.info("No contributor data available")
+
+        with tab_views[1]:
+            col1, col2 = st.columns(2)
+            with col1:
+                fig = create_revenue_by_type_chart(targets_df)
+                st.plotly_chart(fig, use_container_width=True)
+            with col2:
+                fig = create_revenue_type_comparison_chart(targets_df, touchpoints_df)
+                st.plotly_chart(fig, use_container_width=True)
+
+        with tab_views[2]:
+            fig = create_actor_contribution_trend(touchpoints_df, ledger_df)
+            st.plotly_chart(fig, use_container_width=True)
+
+        with tab_views[3]:
+            st.subheader("Revenue Attribution Flow")
+            st.caption("How revenue flows from contributor types through individual contributors to revenue types")
+            fig = create_revenue_relationship_sankey(touchpoints_df, targets_df, ledger_df)
+            st.plotly_chart(fig, use_container_width=True)
+
+        # Data explorer
+        with st.expander("🔍 Explore Raw Data"):
+            data_tab1, data_tab2, data_tab3 = st.tabs(["Touchpoints", "Targets", "Ledger"])
+            with data_tab1:
+                st.dataframe(touchpoints_df, use_container_width=True)
+            with data_tab2:
+                st.dataframe(targets_df, use_container_width=True)
+            with data_tab3:
+                st.dataframe(ledger_df, use_container_width=True)
+
+
+# ============================================================================
+# TAB 2: PARTNER SALES DASHBOARD
+# ============================================================================
+
+with tabs[2]:
     col_title, col_export = st.columns([4, 1])
 
     with col_title:
@@ -1261,10 +1395,10 @@ with tabs[1]:
 
 
 # ============================================================================
-# TAB 2: PARTNER MANAGEMENT DASHBOARD (NEW)
+# TAB 3: PARTNER MANAGEMENT DASHBOARD
 # ============================================================================
 
-with tabs[2]:
+with tabs[3]:
     col_title, col_export = st.columns([4, 1])
 
     with col_title:
@@ -1552,10 +1686,10 @@ with tabs[2]:
 
 
 # ============================================================================
-# TAB 4: APPROVAL QUEUE
+# TAB 5: APPROVAL QUEUE
 # ============================================================================
 
-with tabs[4]:
+with tabs[5]:
     # Check if user has permission to approve touchpoints
     if not can_user_approve_touchpoints():
         st.error("🔒 Access Denied")
@@ -1577,10 +1711,10 @@ with tabs[4]:
 
 
 # ============================================================================
-# TAB 5: DATA IMPORT
+# TAB 6: DATA IMPORT
 # ============================================================================
 
-with tabs[5]:
+with tabs[6]:
     st.title("📥 Data Import")
     st.caption("Upload CSV data with automatic schema detection")
 
@@ -1802,10 +1936,10 @@ Perfect for exploring features and presenting to stakeholders.
 
 
 # ============================================================================
-# TAB 6: SALESFORCE INTEGRATION
+# TAB 7: SALESFORCE INTEGRATION
 # ============================================================================
 
-with tabs[6]:
+with tabs[7]:
     st.title("🔗 Salesforce Integration")
     st.caption("Connect your Salesforce org and configure data sync")
 
@@ -2136,10 +2270,10 @@ with tabs[6]:
 
 
 # ============================================================================
-# TAB 7: VISUAL RULE BUILDER (SIMPLIFIED UX)
+# TAB 8: VISUAL RULE BUILDER (SIMPLIFIED UX)
 # ============================================================================
 
-with tabs[7]:
+with tabs[8]:
     st.title("🎨 Build Your Attribution Rule")
     st.caption("No coding required - just drag sliders and see results instantly")
 
@@ -2420,10 +2554,10 @@ with tabs[7]:
             else:
                 st.warning("Please enter a description first")
 # ============================================================================
-# TAB 8: RULES & TEMPLATES
+# TAB 9: RULES & TEMPLATES
 # ============================================================================
 
-with tabs[8]:
+with tabs[9]:
     st.title("📋 Active Rules & Templates")
 
     if st.session_state.rules:
@@ -2450,10 +2584,10 @@ with tabs[8]:
 
 
 # ============================================================================
-# TAB 9: MEASUREMENT WORKFLOWS
+# TAB 10: MEASUREMENT WORKFLOWS
 # ============================================================================
 
-with tabs[9]:
+with tabs[10]:
     st.title("🔄 Measurement Workflows")
     st.caption("Configure how your company measures partner contribution")
 
@@ -2759,10 +2893,10 @@ with tabs[9]:
 
 
 # ============================================================================
-# TAB 3: DEAL DRILLDOWN
+# TAB 4: DEAL DRILLDOWN
 # ============================================================================
 
-with tabs[3]:
+with tabs[4]:
     col_title, col_export = st.columns([4, 1])
 
     with col_title:
@@ -3082,10 +3216,10 @@ with tabs[3]:
 
 
 # ============================================================================
-# TAB 10: PERIOD MANAGEMENT
+# TAB 11: PERIOD MANAGEMENT
 # ============================================================================
 
-with tabs[10]:
+with tabs[11]:
     # Check if user has permission to manage periods
     if st.session_state.current_user.role.value not in ["admin", "manager"]:
         st.error("🔒 Access Denied")
@@ -3097,10 +3231,10 @@ with tabs[10]:
 
 
 # ============================================================================
-# TAB 11: LEDGER EXPLORER
+# TAB 12: LEDGER EXPLORER
 # ============================================================================
 
-with tabs[11]:
+with tabs[12]:
     st.title("🔍 Attribution Ledger Explorer")
     st.caption("Immutable audit trail of all attribution calculations")
 

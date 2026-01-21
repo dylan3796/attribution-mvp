@@ -499,3 +499,441 @@ def create_partner_role_distribution(use_case_partners_df: pd.DataFrame) -> go.F
     )
 
     return fig
+
+
+# ============================================================================
+# REVENUE RELATIONSHIPS DASHBOARD
+# ============================================================================
+
+def create_revenue_by_actor_type_chart(touchpoints_df: pd.DataFrame, ledger_df: pd.DataFrame) -> go.Figure:
+    """
+    Create a bar chart showing attributed revenue by actor type.
+
+    Args:
+        touchpoints_df: DataFrame with columns: actor_type, actor_id, target_id
+        ledger_df: DataFrame with columns: target_id, attributed_value
+
+    Returns:
+        Plotly figure object
+    """
+    if touchpoints_df.empty or ledger_df.empty:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="No attribution data available",
+            xref="paper", yref="paper",
+            x=0.5, y=0.5, showarrow=False,
+            font=dict(size=16, color="gray")
+        )
+        return fig
+
+    # Merge touchpoints with ledger to get attributed values by actor type
+    merged = touchpoints_df.merge(ledger_df, on='target_id', how='inner')
+    by_actor_type = merged.groupby('actor_type')['attributed_value'].sum().reset_index()
+    by_actor_type = by_actor_type.sort_values('attributed_value', ascending=True)
+
+    # Color mapping for actor types
+    color_map = {
+        'partner': '#3b82f6',
+        'campaign': '#10b981',
+        'sales_rep': '#f59e0b',
+        'channel': '#8b5cf6',
+        'customer_referral': '#ec4899',
+        'event': '#06b6d4',
+        'content': '#84cc16',
+        'custom': '#6b7280'
+    }
+
+    colors = [color_map.get(t, '#6b7280') for t in by_actor_type['actor_type']]
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=by_actor_type['attributed_value'],
+        y=by_actor_type['actor_type'].str.replace('_', ' ').str.title(),
+        orientation='h',
+        marker=dict(color=colors),
+        text=by_actor_type['attributed_value'].apply(lambda x: f"${x:,.0f}"),
+        textposition='outside'
+    ))
+
+    fig.update_layout(
+        title="Attributed Revenue by Contributor Type",
+        xaxis_title="Attributed Revenue ($)",
+        yaxis_title="",
+        template='plotly_white',
+        height=max(300, len(by_actor_type) * 50),
+        margin=dict(l=150, r=80, t=50, b=50)
+    )
+
+    return fig
+
+
+def create_revenue_by_type_chart(targets_df: pd.DataFrame) -> go.Figure:
+    """
+    Create a donut chart showing revenue distribution by revenue type.
+
+    Args:
+        targets_df: DataFrame with columns: revenue_type, value
+
+    Returns:
+        Plotly figure object
+    """
+    if targets_df.empty:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="No revenue data available",
+            xref="paper", yref="paper",
+            x=0.5, y=0.5, showarrow=False,
+            font=dict(size=16, color="gray")
+        )
+        return fig
+
+    # Filter out null revenue types and group
+    df = targets_df[targets_df['revenue_type'].notna()].copy()
+    if df.empty:
+        df = targets_df.copy()
+        df['revenue_type'] = 'Unclassified'
+
+    by_rev_type = df.groupby('revenue_type')['value'].sum().reset_index()
+
+    # Color mapping for revenue types
+    color_map = {
+        'new_logo': '#10b981',      # Green - new business
+        'expansion': '#3b82f6',     # Blue - growth
+        'renewal': '#8b5cf6',       # Purple - retention
+        'services': '#f59e0b',      # Orange - services
+        'consumption': '#06b6d4',   # Cyan - usage
+        'custom': '#6b7280',        # Gray - custom
+        'Unclassified': '#d1d5db'   # Light gray
+    }
+
+    colors = [color_map.get(t, '#6b7280') for t in by_rev_type['revenue_type']]
+
+    fig = go.Figure(data=[go.Pie(
+        labels=by_rev_type['revenue_type'].str.replace('_', ' ').str.title(),
+        values=by_rev_type['value'],
+        hole=0.45,
+        marker=dict(colors=colors),
+        textinfo='label+percent',
+        hovertemplate='<b>%{label}</b><br>$%{value:,.0f}<br>%{percent}<extra></extra>'
+    )])
+
+    fig.update_layout(
+        title="Revenue by Type",
+        template='plotly_white',
+        height=400,
+        showlegend=True,
+        legend=dict(
+            orientation="v",
+            yanchor="middle",
+            y=0.5,
+            xanchor="left",
+            x=1.05
+        )
+    )
+
+    return fig
+
+
+def create_actor_contribution_trend(touchpoints_df: pd.DataFrame, ledger_df: pd.DataFrame) -> go.Figure:
+    """
+    Create a stacked area chart showing actor contribution over time.
+
+    Args:
+        touchpoints_df: DataFrame with columns: actor_type, target_id, timestamp
+        ledger_df: DataFrame with columns: target_id, attributed_value, calculation_timestamp
+
+    Returns:
+        Plotly figure object
+    """
+    if touchpoints_df.empty or ledger_df.empty:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="No trend data available",
+            xref="paper", yref="paper",
+            x=0.5, y=0.5, showarrow=False,
+            font=dict(size=16, color="gray")
+        )
+        return fig
+
+    # Merge and prepare time series
+    merged = touchpoints_df.merge(ledger_df, on='target_id', how='inner')
+
+    # Use calculation_timestamp or timestamp
+    if 'calculation_timestamp' in merged.columns:
+        merged['date'] = pd.to_datetime(merged['calculation_timestamp']).dt.date
+    elif 'timestamp' in merged.columns:
+        merged['date'] = pd.to_datetime(merged['timestamp']).dt.date
+    else:
+        fig = go.Figure()
+        fig.add_annotation(text="No timestamp data", xref="paper", yref="paper",
+                          x=0.5, y=0.5, showarrow=False)
+        return fig
+
+    # Group by date and actor type
+    trend = merged.groupby(['date', 'actor_type'])['attributed_value'].sum().reset_index()
+    trend_pivot = trend.pivot(index='date', columns='actor_type', values='attributed_value').fillna(0)
+
+    # Color mapping
+    color_map = {
+        'partner': '#3b82f6',
+        'campaign': '#10b981',
+        'sales_rep': '#f59e0b',
+        'channel': '#8b5cf6',
+        'customer_referral': '#ec4899',
+        'event': '#06b6d4',
+        'content': '#84cc16',
+        'custom': '#6b7280'
+    }
+
+    fig = go.Figure()
+    for col in trend_pivot.columns:
+        fig.add_trace(go.Scatter(
+            x=trend_pivot.index,
+            y=trend_pivot[col],
+            mode='lines',
+            name=col.replace('_', ' ').title(),
+            stackgroup='one',
+            line=dict(color=color_map.get(col, '#6b7280')),
+            hovertemplate=f'<b>{col.replace("_", " ").title()}</b><br>' +
+                          'Date: %{x}<br>Revenue: $%{y:,.0f}<extra></extra>'
+        ))
+
+    fig.update_layout(
+        title="Attribution Contribution Over Time",
+        xaxis_title="Date",
+        yaxis_title="Attributed Revenue ($)",
+        template='plotly_white',
+        height=400,
+        hovermode='x unified',
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+
+    return fig
+
+
+def create_revenue_relationship_sankey(
+    touchpoints_df: pd.DataFrame,
+    targets_df: pd.DataFrame,
+    ledger_df: pd.DataFrame
+) -> go.Figure:
+    """
+    Create a Sankey diagram showing revenue flow from actors through targets.
+
+    Args:
+        touchpoints_df: DataFrame with columns: actor_type, actor_name, target_id
+        targets_df: DataFrame with columns: id, name, revenue_type, value
+        ledger_df: DataFrame with columns: target_id, attributed_value
+
+    Returns:
+        Plotly Sankey figure
+    """
+    if touchpoints_df.empty or targets_df.empty:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="No relationship data available",
+            xref="paper", yref="paper",
+            x=0.5, y=0.5, showarrow=False,
+            font=dict(size=16, color="gray")
+        )
+        return fig
+
+    # Limit to top actors for readability
+    top_actors = touchpoints_df.groupby(['actor_type', 'actor_id', 'actor_name']).size().reset_index(name='count')
+    top_actors = top_actors.nlargest(10, 'count')
+
+    # Prepare nodes: Actor Types -> Actors -> Revenue Types
+    actor_types = touchpoints_df['actor_type'].unique().tolist()
+    actor_names = top_actors['actor_name'].fillna(top_actors['actor_id']).unique().tolist()
+    rev_types = targets_df['revenue_type'].dropna().unique().tolist()
+    if not rev_types:
+        rev_types = ['Revenue']
+
+    # Build node list
+    nodes = actor_types + actor_names + rev_types
+    node_indices = {name: i for i, name in enumerate(nodes)}
+
+    # Build links
+    sources = []
+    targets_list = []
+    values = []
+    colors = []
+
+    # Actor type -> Actor name links
+    for _, row in top_actors.iterrows():
+        actor_name = row['actor_name'] or row['actor_id']
+        if row['actor_type'] in node_indices and actor_name in node_indices:
+            sources.append(node_indices[row['actor_type']])
+            targets_list.append(node_indices[actor_name])
+            values.append(row['count'])
+            colors.append('rgba(59, 130, 246, 0.4)')
+
+    # Actor name -> Revenue type links (via touchpoints and targets)
+    merged = touchpoints_df.merge(targets_df, left_on='target_id', right_on='id', how='inner')
+    merged = merged.merge(ledger_df[['target_id', 'attributed_value']], on='target_id', how='left')
+
+    for _, row in top_actors.iterrows():
+        actor_name = row['actor_name'] or row['actor_id']
+        actor_data = merged[merged['actor_id'] == row['actor_id']]
+        for rev_type in rev_types:
+            type_data = actor_data[actor_data['revenue_type'] == rev_type] if 'revenue_type' in actor_data.columns else actor_data
+            if not type_data.empty:
+                total_value = type_data['attributed_value'].sum() if 'attributed_value' in type_data.columns else type_data['value'].sum()
+                if total_value > 0 and actor_name in node_indices and rev_type in node_indices:
+                    sources.append(node_indices[actor_name])
+                    targets_list.append(node_indices[rev_type])
+                    values.append(total_value)
+                    colors.append('rgba(16, 185, 129, 0.4)')
+
+    if not sources:
+        fig = go.Figure()
+        fig.add_annotation(text="Insufficient data for Sankey", xref="paper", yref="paper",
+                          x=0.5, y=0.5, showarrow=False)
+        return fig
+
+    # Node colors
+    node_colors = []
+    for node in nodes:
+        if node in actor_types:
+            node_colors.append('#3b82f6')
+        elif node in rev_types:
+            node_colors.append('#10b981')
+        else:
+            node_colors.append('#f59e0b')
+
+    fig = go.Figure(data=[go.Sankey(
+        node=dict(
+            pad=15,
+            thickness=20,
+            line=dict(color="black", width=0.5),
+            label=[n.replace('_', ' ').title() for n in nodes],
+            color=node_colors
+        ),
+        link=dict(
+            source=sources,
+            target=targets_list,
+            value=values,
+            color=colors
+        )
+    )])
+
+    fig.update_layout(
+        title="Revenue Attribution Flow",
+        template='plotly_white',
+        height=500,
+        font_size=12
+    )
+
+    return fig
+
+
+def create_top_contributors_table(
+    touchpoints_df: pd.DataFrame,
+    ledger_df: pd.DataFrame,
+    limit: int = 10
+) -> pd.DataFrame:
+    """
+    Create a summary table of top contributors across all actor types.
+
+    Args:
+        touchpoints_df: DataFrame with columns: actor_type, actor_id, actor_name, target_id
+        ledger_df: DataFrame with columns: target_id, attributed_value
+
+    Returns:
+        DataFrame with top contributors summary
+    """
+    if touchpoints_df.empty or ledger_df.empty:
+        return pd.DataFrame(columns=['Actor Type', 'Name', 'Deals', 'Attributed Revenue'])
+
+    # Merge and aggregate
+    merged = touchpoints_df.merge(ledger_df, on='target_id', how='inner')
+
+    summary = merged.groupby(['actor_type', 'actor_id', 'actor_name']).agg({
+        'target_id': 'nunique',
+        'attributed_value': 'sum'
+    }).reset_index()
+
+    summary.columns = ['Actor Type', 'Actor ID', 'Name', 'Deals', 'Attributed Revenue']
+    summary['Actor Type'] = summary['Actor Type'].str.replace('_', ' ').str.title()
+    summary['Name'] = summary['Name'].fillna(summary['Actor ID'])
+    summary = summary.drop(columns=['Actor ID'])
+    summary = summary.sort_values('Attributed Revenue', ascending=False).head(limit)
+
+    return summary
+
+
+def create_revenue_type_comparison_chart(targets_df: pd.DataFrame, touchpoints_df: pd.DataFrame) -> go.Figure:
+    """
+    Create a grouped bar chart comparing actor contributions by revenue type.
+
+    Args:
+        targets_df: DataFrame with columns: id, revenue_type, value
+        touchpoints_df: DataFrame with columns: actor_type, target_id
+
+    Returns:
+        Plotly figure object
+    """
+    if targets_df.empty or touchpoints_df.empty:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="No comparison data available",
+            xref="paper", yref="paper",
+            x=0.5, y=0.5, showarrow=False,
+            font=dict(size=16, color="gray")
+        )
+        return fig
+
+    # Merge and prepare comparison
+    merged = touchpoints_df.merge(
+        targets_df[['id', 'revenue_type', 'value']],
+        left_on='target_id',
+        right_on='id',
+        how='inner'
+    )
+
+    if merged.empty or 'revenue_type' not in merged.columns:
+        fig = go.Figure()
+        fig.add_annotation(text="No revenue type data", xref="paper", yref="paper",
+                          x=0.5, y=0.5, showarrow=False)
+        return fig
+
+    # Fill missing revenue types
+    merged['revenue_type'] = merged['revenue_type'].fillna('Unclassified')
+
+    # Group by revenue type and actor type
+    comparison = merged.groupby(['revenue_type', 'actor_type'])['value'].sum().reset_index()
+    comparison_pivot = comparison.pivot(index='revenue_type', columns='actor_type', values='value').fillna(0)
+
+    # Color mapping
+    color_map = {
+        'partner': '#3b82f6',
+        'campaign': '#10b981',
+        'sales_rep': '#f59e0b',
+        'channel': '#8b5cf6',
+        'customer_referral': '#ec4899',
+        'event': '#06b6d4',
+        'content': '#84cc16',
+        'custom': '#6b7280'
+    }
+
+    fig = go.Figure()
+    for col in comparison_pivot.columns:
+        fig.add_trace(go.Bar(
+            name=col.replace('_', ' ').title(),
+            x=comparison_pivot.index.str.replace('_', ' ').str.title(),
+            y=comparison_pivot[col],
+            marker_color=color_map.get(col, '#6b7280'),
+            text=comparison_pivot[col].apply(lambda x: f"${x:,.0f}" if x > 0 else ""),
+            textposition='outside'
+        ))
+
+    fig.update_layout(
+        title="Actor Contributions by Revenue Type",
+        xaxis_title="Revenue Type",
+        yaxis_title="Total Value ($)",
+        barmode='group',
+        template='plotly_white',
+        height=450,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+
+    return fig

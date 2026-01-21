@@ -118,7 +118,7 @@ class Database:
         );
         """)
 
-        # Attribution Target table
+        # Attribution Target table (enhanced with revenue type classification)
         self.run_sql(f"""
         CREATE TABLE IF NOT EXISTS attribution_target (
             id {pk},
@@ -126,6 +126,9 @@ class Database:
             name TEXT,
             type TEXT NOT NULL,
             value REAL NOT NULL,
+            revenue_type TEXT,
+            account_id TEXT,
+            account_name TEXT,
             created_at {timestamp_type} DEFAULT {default_timestamp},
             metadata TEXT
         );
@@ -153,6 +156,43 @@ class Database:
             metadata TEXT,
             created_at {timestamp_type} DEFAULT {default_timestamp},
             FOREIGN KEY (target_id) REFERENCES attribution_target(id)
+        );
+        """)
+
+        # Universal Touchpoint table (supports any actor type: partner, campaign, sales_rep, etc.)
+        self.run_sql(f"""
+        CREATE TABLE IF NOT EXISTS touchpoint (
+            id {pk},
+            actor_type TEXT NOT NULL,
+            actor_id TEXT NOT NULL,
+            actor_name TEXT,
+            target_id INTEGER NOT NULL,
+            touchpoint_type TEXT NOT NULL,
+            role TEXT,
+            weight REAL DEFAULT 1.0,
+            timestamp {timestamp_type},
+            source TEXT DEFAULT 'touchpoint_tracking',
+            source_id TEXT,
+            source_confidence REAL DEFAULT 1.0,
+            requires_approval {bool_type} DEFAULT {'FALSE' if self.is_postgres else '0'},
+            approved_by TEXT,
+            approval_timestamp {timestamp_type},
+            metadata TEXT,
+            created_at {timestamp_type} DEFAULT {default_timestamp},
+            FOREIGN KEY (target_id) REFERENCES attribution_target(id)
+        );
+        """)
+
+        # Actors table (lookup for all actor types: partners, campaigns, sales reps, etc.)
+        self.run_sql(f"""
+        CREATE TABLE IF NOT EXISTS actors (
+            id {pk},
+            actor_type TEXT NOT NULL,
+            actor_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            metadata TEXT,
+            created_at {timestamp_type} DEFAULT {default_timestamp},
+            UNIQUE(actor_type, actor_id)
         );
         """)
 
@@ -249,26 +289,51 @@ class Database:
 
     def _run_migrations(self):
         """Add missing columns to existing databases."""
-        try:
-            if self.is_postgres:
-                self.run_sql("ALTER TABLE attribution_rule ADD COLUMN IF NOT EXISTS priority INTEGER DEFAULT 0")
-            else:
-                # SQLite: check if column exists first
-                cursor = self.adapter.execute("PRAGMA table_info(attribution_rule)")
-                if "priority" not in [row[1] for row in cursor.fetchall()]:
-                    self.run_sql("ALTER TABLE attribution_rule ADD COLUMN priority INTEGER DEFAULT 0")
-        except Exception as e:
-            logger.warning(f"Migration skipped: {e}")
+        migrations = [
+            # Attribution rule priority
+            ("attribution_rule", "priority", "INTEGER DEFAULT 0"),
+            # Attribution target revenue type and account fields
+            ("attribution_target", "revenue_type", "TEXT"),
+            ("attribution_target", "account_id", "TEXT"),
+            ("attribution_target", "account_name", "TEXT"),
+        ]
+
+        for table, column, definition in migrations:
+            try:
+                if self.is_postgres:
+                    self.run_sql(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {definition}")
+                else:
+                    # SQLite: check if column exists first
+                    cursor = self.adapter.execute(f"PRAGMA table_info({table})")
+                    existing_cols = [row[1] for row in cursor.fetchall()]
+                    if column not in existing_cols:
+                        self.run_sql(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+            except Exception as e:
+                logger.warning(f"Migration skipped for {table}.{column}: {e}")
 
     def _create_indexes(self):
         """Create indexes for performance."""
         indexes = [
+            # Partner touchpoint indexes
             "CREATE INDEX IF NOT EXISTS idx_touchpoint_target ON partner_touchpoint(target_id);",
             "CREATE INDEX IF NOT EXISTS idx_touchpoint_partner ON partner_touchpoint(partner_id);",
+            # Universal touchpoint indexes
+            "CREATE INDEX IF NOT EXISTS idx_univ_touchpoint_target ON touchpoint(target_id);",
+            "CREATE INDEX IF NOT EXISTS idx_univ_touchpoint_actor ON touchpoint(actor_type, actor_id);",
+            "CREATE INDEX IF NOT EXISTS idx_univ_touchpoint_type ON touchpoint(actor_type);",
+            # Actors indexes
+            "CREATE INDEX IF NOT EXISTS idx_actors_type ON actors(actor_type);",
+            "CREATE INDEX IF NOT EXISTS idx_actors_lookup ON actors(actor_type, actor_id);",
+            # Attribution target indexes
+            "CREATE INDEX IF NOT EXISTS idx_target_revenue_type ON attribution_target(revenue_type);",
+            "CREATE INDEX IF NOT EXISTS idx_target_account ON attribution_target(account_id);",
+            # Ledger indexes
             "CREATE INDEX IF NOT EXISTS idx_ledger_target ON ledger_entry(target_id);",
             "CREATE INDEX IF NOT EXISTS idx_ledger_partner ON ledger_entry(partner_id);",
+            # Period indexes
             "CREATE INDEX IF NOT EXISTS idx_period_org ON attribution_period(organization_id);",
             "CREATE INDEX IF NOT EXISTS idx_period_dates ON attribution_period(start_date, end_date);",
+            # User/session indexes
             "CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);",
             "CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);",
         ]
