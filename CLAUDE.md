@@ -42,21 +42,77 @@ pytest tests/test_rules.py       # Specific file
 
 ### Module Organization
 
+**Core Application:**
 | Module | Purpose |
 |--------|---------|
 | `app.py` | Main Streamlit entry point (~3100 lines), 12 UI tabs, initialization |
 | `db.py` | Database operations, schema creation, migrations |
-| `rules.py` | Rule engine for business logic evaluation |
+| `db_connection.py` | Database connection management |
+| `db_universal.py` | Universal database abstraction layer |
+| `repository.py` | Data access layer and repository pattern |
+| `config.py` | Environment variable configuration |
+| `models.py` | Data classes and type definitions |
+| `models_new.py` | Extended data models |
+
+**Attribution & Rules:**
+| Module | Purpose |
+|--------|---------|
 | `attribution.py` | Core attribution calculation logic |
 | `attribution_engine.py` | Enhanced attribution computation |
-| `models.py` | Data classes and type definitions |
-| `config.py` | Environment variable configuration |
-| `auth.py` | Authentication and user management |
-| `session_manager.py` | Session state and DB persistence |
-| `dashboards.py` | Plotly visualization components |
+| `rules.py` | Rule engine for business logic evaluation |
+| `nl_rule_parser.py` | Natural language rule parsing |
+| `inference_engine.py` | Attribution inference logic |
+
+**Partner & Deal Management:**
+| Module | Purpose |
+|--------|---------|
+| `partner_analytics.py` | Partner performance analytics |
+| `partner_portal.py` | Partner-facing portal features |
+| `deal_registration.py` | Deal registration workflow |
+| `approval_workflow.py` | Approval queue management |
+| `period_management.py` | Attribution period close/lock |
+
+**UI & Visualization:**
+| Module | Purpose |
+|--------|---------|
+| `dashboards.py` | Executive dashboard components |
+| `dashboards_partner.py` | Partner-specific dashboards |
+| `login_page.py` | Authentication UI |
+
+**Data & Integration:**
+| Module | Purpose |
+|--------|---------|
+| `data_ingestion.py` | Data import and processing |
+| `salesforce_connector.py` | Salesforce CRM integration |
+| `bulk_operations.py` | Bulk data operations |
+| `demo_data.py` | Demo/seed data generation |
+
+**Export & Reporting:**
+| Module | Purpose |
+|--------|---------|
 | `exports.py` | CSV/Excel/PDF export functionality |
+| `pdf_executive_report.py` | Executive PDF report generation |
+| `templates.py` | Report templates |
+
+**AI & LLM:**
+| Module | Purpose |
+|--------|---------|
 | `ai.py` | OpenAI-powered features |
 | `llm.py` | LLM integration wrapper |
+
+**Auth & Session:**
+| Module | Purpose |
+|--------|---------|
+| `auth.py` | Authentication and user management |
+| `session_manager.py` | Session state and DB persistence |
+
+**Utilities:**
+| Module | Purpose |
+|--------|---------|
+| `utils.py` | General utility functions |
+| `utils_partner.py` | Partner-specific utilities |
+| `validate_workflows.py` | Workflow validation |
+| `migrate_app.py` | Database migration utilities |
 
 ### Data Flow
 ```
@@ -84,7 +140,21 @@ Update Session State & UI
 - `revenue_events` - Daily revenue data
 - `attribution_events` - Attribution ledger entries
 - `attribution_explanations` - Detailed split explanations
+- `ledger_entry` - Immutable attribution ledger
 - `audit_trail` - Complete change history
+
+**Rules & Workflows:**
+- `attribution_rule` - Business rules for attribution
+- `measurement_workflow` - Attribution measurement configurations
+- `attribution_target` - Attribution targets and goals
+- `attribution_period` - Period close/lock management
+
+**Partner touchpoints:**
+- `partner_touchpoint` - Partner interaction records
+
+**AI & Insights:**
+- `ai_summaries` - AI-generated summaries
+- `ai_recommendations` - AI-generated recommendations
 
 **System:**
 - `users`, `sessions`, `organizations` - Authentication
@@ -117,7 +187,10 @@ Valid values: `Discovery`, `Evaluation`, `Commit`, `Live`
 - Small, focused functions (<50 lines preferred)
 
 ### UI Patterns (Streamlit)
-- Six main tabs in app.py
+- 12 main tabs organized into three groups:
+  - **Operational Views** (tabs 0-4): Executive Dashboard, Partner Sales, Partner Management, Deal Drilldown, Approval Queue
+  - **Setup & Configuration** (tabs 5-9): Data Import, Salesforce Integration, Rule Builder, Rules & Templates, Measurement Workflows
+  - **Advanced** (tabs 10-11): Period Management, Ledger Explorer
 - Use `st.columns()` for grid layouts
 - Use `st.metric()` for KPIs
 - Plotly for interactive charts
@@ -193,12 +266,13 @@ with tabs[n]:
 ### Test Structure
 ```
 tests/
-├── test_db.py            # Database operations
-├── test_rules.py         # Rule engine logic
-├── test_attribution.py   # Attribution calculations
-├── test_ai_and_utils.py  # AI features and utilities
-├── test_helpers.py       # Helper functions
-└── test_workflows.py     # End-to-end workflows
+├── test_db.py                      # Database operations
+├── test_rules.py                   # Rule engine logic
+├── test_attribution.py             # Attribution calculations
+├── test_ai_and_utils.py            # AI features and utilities
+├── test_helpers.py                 # Helper functions
+├── test_workflows.py               # End-to-end workflows
+└── test_universal_architecture.py  # Universal architecture tests
 ```
 
 ### Test Patterns
@@ -275,12 +349,18 @@ db.add_audit_entry(
 |---------|----------|
 | Main application | `app.py` |
 | Database schema | `db.py:init_db()` |
-| Business rules | `rules.py` |
-| Attribution logic | `attribution.py`, `attribution_engine.py` |
+| Database connections | `db_connection.py`, `db_universal.py` |
+| Repository layer | `repository.py` |
+| Business rules | `rules.py`, `nl_rule_parser.py` |
+| Attribution logic | `attribution.py`, `attribution_engine.py`, `inference_engine.py` |
+| Partner features | `partner_analytics.py`, `partner_portal.py`, `deal_registration.py` |
+| Workflows | `approval_workflow.py`, `period_management.py`, `measurement_workflow` (in db) |
 | Data models | `models.py`, `models_new.py` |
+| Data import | `data_ingestion.py`, `salesforce_connector.py` |
+| Exports | `exports.py`, `pdf_executive_report.py` |
 | Configuration | `config.py`, `.env` |
 | Tests | `tests/` |
-| Documentation | `README.md`, `AGENTS.md` |
+| Documentation | `README.md`, `AGENTS.md`, `CLAUDE.md` |
 | Claude agents | `.claude/agents/` |
 
 ## Specialized Claude Agents
